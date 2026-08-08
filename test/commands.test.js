@@ -53,5 +53,24 @@ assert.strictEqual(p10.type, "usage");
 const p11 = parseCommand("");
 assert.strictEqual(p11.type, "usage");
 
+// 状态
+const p12 = parseCommand("/状态");
+assert.strictEqual(p12.type, "status");
+
+// pin
+const p13 = parseCommand("/pin 2");
+assert.strictEqual(p13.type, "pin");
+assert.strictEqual(p13.selector, "2");
+const p14 = parseCommand("/pin");
+assert.strictEqual(p14.type, "usage");
+
+// 别名
+const p15 = parseCommand("/别名 2 日报");
+assert.strictEqual(p15.type, "alias");
+assert.strictEqual(p15.selector, "2");
+assert.strictEqual(p15.alias, "日报");
+const p16 = parseCommand("/别名 2");
+assert.strictEqual(p16.type, "usage");
+
 console.log("PASS commands: 全部命令解析正确");
 console.log("HELP_TEXT 非空:", HELP_TEXT.length > 50);

@@ -1,6 +1,8 @@
 // claude.exe 调用器 + 串行队列 + 超时/杀进程 + 命令分发
 const { spawn, execFileSync } = require("child_process");
 const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
 const { parseCommand, HELP_TEXT } = require("./commands");
 const { detectActiveSession, listRecentSessions, readSessionHistory, formatSessionName } = require("./detector");
 const { encodeCwd } = require("./projects");
@@ -14,6 +16,9 @@ class ClaudeRunner {
     this.queue = [];
     this.running = false;
     this.active = null;
+    this.activeJobName = null; // 当前正在执行的任务名（/状态 用）
+    this.activeStartedAt = null; // 当前任务开始时间戳
+    this.watchInfo = null; // 会话实时监控状态（/盯 用）
   }
 
   /**
@@ -53,6 +58,26 @@ class ClaudeRunner {
         await this._handleReset(ctx);
         break;
       }
+      case "status": {
+        await this._handleStatus(ctx);
+        break;
+      }
+      case "pin": {
+        await this._handlePin(ctx, cmd);
+        break;
+      }
+      case "alias": {
+        await this._handleAlias(ctx, cmd);
+        break;
+      }
+      case "watch": {
+        await this._handleWatch(ctx, cmd);
+        break;
+      }
+      case "unwatch": {
+        await this._handleUnwatch(ctx);
+        break;
+      }
       case "prompt": {
         await this._handlePrompt(ctx, cmd);
         break;
@@ -73,6 +98,41 @@ class ClaudeRunner {
       proj = this.registry.addProject(cfg.claude.workdir, encodeCwd(cfg.claude.workdir));
     }
     return proj;
+  }
+
+  /**
+   * 自动识别 VSCode 最近会话并绑定为当前任务
+   * 任务名用最近提示词（formatSessionName），比 vscode-<slug> 更友好
+   * @param {object} proj
+   * @returns {{name, sessionId, cwd}|null}
+   */
+  _bindDetected(proj) {
+    const detected = detectActiveSession({
+      sessionDir: this.cfg.claude.sessionDir,
+      cwd: proj.cwd,
+    });
+    if (!detected) return null;
+    // 补 lastPrompt：detectActiveSession 不返回，需经 listRecentSessions 获取
+    const recent = listRecentSessions({
+      sessionDir: this.cfg.claude.sessionDir,
+      cwd: proj.cwd,
+      limit: 0,
+    });
+    const info = recent.find((s) => s.sessionId === detected.sessionId) || {};
+    const name = formatSessionName({
+      slug: detected.slug,
+      sessionId: detected.sessionId,
+      lastPrompt: info.lastPrompt,
+    });
+    const projKey = encodeCwd(proj.cwd);
+    this.registry.addTask(projKey, name, {
+      sessionId: detected.sessionId,
+      cwd: detected.cwd,
+      slug: detected.slug,
+    });
+    this.registry.setCurrentTask(projKey, name);
+    this.log.info("自动绑定 VSCode 会话", { name, sessionId: detected.sessionId });
+    return { name, sessionId: detected.sessionId, cwd: detected.cwd };
   }
 
   async _handleProject(ctx, cmd) {
@@ -207,9 +267,10 @@ class ClaudeRunner {
       );
     }
     this.registry.setCurrentTask(projKey, task.name);
+    const displayName = task.alias || task.name;
     await this.pusher.pushSectioned(
       "切换",
-      `已切换到「${task.name}」\n发送 /继续 <提示词> 或直接发消息继续。`
+      `已切换到「${displayName}」\n发送 /继续 <提示词> 或直接发消息继续。`
     );
   }
 
@@ -224,21 +285,26 @@ class ClaudeRunner {
       const tasks = this.registry.listTasks(key);
       const cur = this.registry.getCurrentTask(key);
       const boundIds = new Set(tasks.map((t) => t.sessionId));
-      // 所有 VSCode 会话（含已绑定的，但已绑定显示为任务名）
+      // 所有 VSCode 会话（含已绑定的，但已绑定显示为任务名），建 sessionId → 信息索引
       const all = listRecentSessions({ sessionDir: this.cfg.claude.sessionDir, cwd, limit: 0 });
+      const byId = new Map(all.map((s) => [s.sessionId, s]));
       // 标记每个 VSCode 会话是否已被绑定
       const entries = [];
       tasks.forEach((t) => {
+        const info = byId.get(t.sessionId);
         entries.push({
           name: t.name,
+          alias: t.alias,
+          pinned: !!t.pinned,
           mark: cur && cur.name === t.name,
           isBound: true,
           time: (t.lastActiveAt || "").slice(0, 16),
+          lastPrompt: info ? info.lastPrompt : null,
         });
       });
       const unbound = all.filter((s) => !boundIds.has(s.sessionId));
       unbound.forEach((s) => {
-        entries.push({ name: formatSessionName(s), mark: false, isBound: false, time: null });
+        entries.push({ name: formatSessionName(s), alias: null, pinned: false, mark: false, isBound: false, time: null, lastPrompt: null });
       });
       return { key, cwd, entries, curName: cur ? cur.name : null };
     };
@@ -280,8 +346,21 @@ class ClaudeRunner {
       lines.push(`   路径: ${pd.cwd}`);
       if (pd.entries.length) {
         pd.entries.slice(0, 60).forEach((e, i) => {
+          const star = e.pinned ? "⭐ " : "";
           const mark = e.mark ? " 👈当前" : "";
-          lines.push(`   ${i + 1}. ${e.name}${mark}${e.time ? ` (${e.time})` : ""}`);
+          // 显示名与 VSCode 侧边栏一致：alias 优先，其次最近提示词（lastPrompt），最后 fallback name
+          let name;
+          if (e.alias) {
+            name = e.alias;
+          } else if (e.lastPrompt) {
+            const lp = e.lastPrompt.replace(/\s+/g, " ").trim();
+            name = lp.length > 40 ? lp.slice(0, 40) + "…" : lp;
+          } else {
+            name = e.name;
+          }
+          let line = `   ${i + 1}. ${star}${name}${mark}`;
+          if (e.time) line += ` (${e.time})`;
+          lines.push(line);
         });
         if (pd.entries.length > 60) {
           lines.push(`   …共 ${pd.entries.length} 个，仅显示前 60。`);
@@ -300,24 +379,15 @@ class ClaudeRunner {
     const projKey = encodeCwd(proj.cwd);
     const cur = this.registry.getCurrentTask(projKey);
     if (!cur) {
-      // 无当前任务 → 自动识别 VSCode 会话并绑定
-      const detected = detectActiveSession({
-        sessionDir: this.cfg.claude.sessionDir,
-        cwd: proj.cwd,
-      });
-      if (detected) {
-        const name = "vscode-" + (detected.slug || detected.sessionId.slice(0, 8));
-        this.registry.addTask(projKey, name, {
-          sessionId: detected.sessionId,
-          cwd: detected.cwd,
-        });
-        this.registry.setCurrentTask(projKey, name);
-        this.log.info("自动绑定 VSCode 会话", { name, sessionId: detected.sessionId });
+      // 无当前任务 → 自动识别 VSCode 会话并绑定（relay 标记接力）
+      const bound = this._bindDetected(proj);
+      if (bound) {
         return this.enqueue({
-          taskName: name,
-          sessionId: detected.sessionId,
-          cwd: detected.cwd,
+          taskName: bound.name,
+          sessionId: bound.sessionId,
+          cwd: bound.cwd,
           prompt: cmd.prompt,
+          relay: true,
         });
       }
       // 无可用会话 → 开新会话
@@ -341,21 +411,17 @@ class ClaudeRunner {
     const projKey = encodeCwd(proj.cwd);
     const cur = this.registry.getCurrentTask(projKey);
     if (!cur) {
-      // 无当前任务 → 尝试自动识别 VSCode 会话
-      const detected = detectActiveSession({
-        sessionDir: this.cfg.claude.sessionDir,
-        cwd: proj.cwd,
-      });
-      if (detected) {
-        const name = "vscode-" + (detected.slug || detected.sessionId.slice(0, 8));
-        this.registry.addTask(projKey, name, {
-          sessionId: detected.sessionId,
-          cwd: detected.cwd,
-        });
-        this.registry.setCurrentTask(projKey, name);
-        this.log.info("自动绑定 VSCode 会话", { name, sessionId: detected.sessionId });
+      // 无当前任务 → 尝试自动识别 VSCode 会话（relay 标记接力）
+      const bound = this._bindDetected(proj);
+      if (bound) {
         const prompt = cmd.prompt || "继续";
-        return this.enqueue({ taskName: name, sessionId: detected.sessionId, cwd: detected.cwd, prompt });
+        return this.enqueue({
+          taskName: bound.name,
+          sessionId: bound.sessionId,
+          cwd: bound.cwd,
+          prompt,
+          relay: true,
+        });
       }
       return this.pusher.pushSectioned(
         "继续",
@@ -379,10 +445,102 @@ class ClaudeRunner {
   }
 
   /**
+   * 主动推送（兼容无 bot / mock pusher），失败静默
+   * @param {string} text
+   */
+  _notify(text) {
+    if (this.pusher && typeof this.pusher.sendNotification === "function") {
+      this.pusher.sendNotification(text).catch(() => {});
+    }
+  }
+
+  async _handleStatus(ctx) {
+    const proj = this._ensureProject();
+    const projKey = encodeCwd(proj.cwd);
+    const cur = this.registry.getCurrentTask(projKey);
+    const queueN = this.queue.length;
+
+    if (!cur) {
+      const lines = [
+        "当前无任务",
+        queueN > 0 ? `队列中还有 ${queueN} 条消息待处理。` : "队列空闲。",
+        "用 /新开 <任务名> 开新会话，或直接发消息。",
+      ];
+      return this.pusher.pushSectioned("状态", lines.join("\n"));
+    }
+
+    // 最后一句：从 listRecentSessions 的 lastPrompt 取
+    let lastPrompt = null;
+    try {
+      const recent = listRecentSessions({
+        sessionDir: this.cfg.claude.sessionDir,
+        cwd: cur.cwd,
+        limit: 0,
+      });
+      const info = recent.find((s) => s.sessionId === cur.sessionId);
+      if (info) lastPrompt = info.lastPrompt;
+    } catch {}
+
+    // 显示名与 VSCode 侧边栏一致：alias 优先，其次 lastPrompt（最近提示词），最后 name
+    let displayName;
+    if (cur.alias) {
+      displayName = cur.alias;
+    } else if (lastPrompt) {
+      const lp = lastPrompt.replace(/\s+/g, " ").trim();
+      displayName = lp.length > 60 ? lp.slice(0, 60) + "…" : lp;
+    } else {
+      displayName = cur.name;
+    }
+    const lines = [`📄 任务: ${displayName}`];
+    if (cur.lastActiveAt) lines.push(`   最近活跃: ${cur.lastActiveAt.slice(0, 16)}`);
+    // 状态
+    if (this.activeJobName && this.activeStartedAt) {
+      const secs = Math.round((Date.now() - this.activeStartedAt) / 1000);
+      lines.push(`   状态: 正在执行「${this.activeJobName}」，已耗时 ${secs}s`);
+      if (queueN > 0) lines.push(`   队列: 还有 ${queueN} 条等待`);
+    } else if (queueN > 0) {
+      lines.push(`   状态: 排队中，前面 ${queueN} 条`);
+    } else {
+      lines.push("   状态: 空闲（等待指令）");
+    }
+    lines.push("", "发送 /继续 <提示词> 或直接发消息继续。");
+    await this.pusher.pushSectioned("状态", lines.join("\n"));
+  }
+
+  async _handlePin(ctx, cmd) {
+    const proj = this._ensureProject();
+    const projKey = encodeCwd(proj.cwd);
+    const result = this.registry.togglePin(projKey, cmd.selector);
+    if (result === null) {
+      return this.pusher.pushSectioned("置顶", `未找到任务「${cmd.selector}」。用 /会话列表 查看。`);
+    }
+    const task = this.registry.findTask(projKey, cmd.selector);
+    const displayName = task ? task.alias || task.name : cmd.selector;
+    await this.pusher.pushSectioned(
+      "置顶",
+      result ? `已置顶「${displayName}」⭐` : `已取消置顶「${displayName}」`
+    );
+  }
+
+  async _handleAlias(ctx, cmd) {
+    const proj = this._ensureProject();
+    const projKey = encodeCwd(proj.cwd);
+    const ok = this.registry.setAlias(projKey, cmd.selector, cmd.alias);
+    if (!ok) {
+      return this.pusher.pushSectioned("别名", `未找到任务「${cmd.selector}」。用 /会话列表 查看。`);
+    }
+    await this.pusher.pushSectioned("别名", `已为任务设置别名「${cmd.alias}」`);
+  }
+
+  /**
    * 入队一条 claude 执行
    */
   enqueue(job) {
     this.queue.push(job);
+    // 已有任务在跑 → 新任务排队，提示用户
+    if (this.running && this.queue.length > 1) {
+      this._notify(`[${job.taskName}] ⏳ 已入队，前面还有 ${this.queue.length - 1} 条任务。`);
+    }
     if (!this.running) this._drain();
     return job;
   }
@@ -398,6 +556,25 @@ class ClaudeRunner {
 
   async _run(job) {
     const start = Date.now();
+    // 状态追踪（/状态 命令用）
+    this.activeJobName = job.taskName;
+    this.activeStartedAt = start;
+
+    // 长任务心跳：超过阈值后定期推送"仍在运行"（递归 setTimeout，finally 清理）
+    const hbCfg = (this.cfg.pusher && this.cfg.pusher.heartbeatStartMs) ? this.cfg.pusher : {};
+    const hbStart = hbCfg.heartbeatStartMs || 30 * 1000;
+    const hbInterval = hbCfg.heartbeatIntervalMs || 20 * 1000;
+    let hbTimer = null;
+    const scheduleHeartbeat = () => {
+      const elapsed = Date.now() - start;
+      if (elapsed < hbStart) {
+        hbTimer = setTimeout(scheduleHeartbeat, hbStart - elapsed);
+      } else {
+        this._notify(`[${job.taskName}] ⏳ 仍在运行，已耗时 ${Math.round(elapsed / 1000)}s…`);
+        hbTimer = setTimeout(scheduleHeartbeat, hbInterval);
+      }
+    };
+    hbTimer = setTimeout(scheduleHeartbeat, hbStart);
 
     // 开启智能机器人流式会话（若 bot 可用），对话内容走打字机
     let streamStarted = false;
@@ -449,10 +626,19 @@ class ClaudeRunner {
         const errText = "❌ 进程异常: " + (error ? error.message : "退出码 " + code);
         await this.pusher.pushSectioned(job.taskName, errText);
       }
+      // 长任务完成总结（> 阈值，成功且有结果）
+      const completeMs = (this.cfg.pusher && this.cfg.pusher.completeNotifyMs) || 60 * 1000;
+      if (Date.now() - start > completeMs && finalResult) {
+        this._notify(`[${job.taskName}] ✅ 完成，总耗时 ${Math.round((Date.now() - start) / 1000)}s。`);
+      }
     } catch (e) {
       this.log.error("claude 执行异常", { err: e.message });
       await this.pusher.pushSectioned(job.taskName, "❌ 执行失败: " + e.message);
     } finally {
+      if (hbTimer) clearTimeout(hbTimer);
+      hbTimer = null;
+      this.activeJobName = null;
+      this.activeStartedAt = null;
       // 结束流式会话（未 finish 则用最终结果定型）
       if (this.pusher && typeof this.pusher.endTask === "function") {
         await this.pusher.endTask(job.taskName);
@@ -536,7 +722,17 @@ class ClaudeRunner {
     if (job.isNew) {
       return [...base, "--session-id", job.sessionId, "--name", job.taskName, job.prompt];
     }
-    return [...base, "--resume", job.sessionId, job.prompt];
+    const args = [...base, "--resume", job.sessionId];
+    // 接力：微信第一次接手 VSCode 会话时注入"继续而非重来"的语义引导
+    if (job.relay) {
+      const relayHint =
+        "注意：你是用户通过企业微信从远端接管此会话。" +
+        "此会话此前已在 VSCode 中处理过。请先回顾当前进度，" +
+        "然后执行用户新指令，不要从头开始或重复已完成的工作。";
+      args.push("--append-system-prompt", relayHint);
+    }
+    args.push(job.prompt);
+    return args;
   }
 
   _spawn(args, cwd, onPartial) {
@@ -690,6 +886,155 @@ class ClaudeRunner {
       return "❌ 进程退出码 " + code + "\n" + (stderr || "").slice(-500);
     }
     return stdout.slice(-4000);
+  }
+
+  /**
+   * /盯 <编号>：实时监控某会话在 VSCode 的进展（tail jsonl 增量 → 推微信）
+   * 适用于 VSCode 里正在跑的 claude（实时旁观，无法控制/授权）
+   */
+  async _handleWatch(ctx, cmd) {
+    const proj = this._ensureProject();
+    const cwd = proj ? proj.cwd : this.cfg.claude.workdir;
+    const sessions = listRecentSessions({ sessionDir: this.cfg.claude.sessionDir, cwd, limit: 0 });
+
+    let session = null;
+    if (cmd.selector) {
+      const n = parseInt(cmd.selector, 10);
+      if (!isNaN(n) && n >= 1 && n <= sessions.length) {
+        session = sessions[n - 1];
+      } else {
+        return this.pusher.sendNotification(`⚠️ 编号 ${cmd.selector} 无效。用 /会话列表 查看编号。`);
+      }
+    } else {
+      // 无参数 → 盯当前任务会话
+      const key = encodeCwd(cwd);
+      const cur = this.registry.getCurrentTask(key);
+      if (cur) session = { sessionId: cur.sessionId, cwd: cur.cwd };
+    }
+    if (!session) {
+      return this.pusher.sendNotification("📡 未找到要盯的会话。用法: /盯 <编号>，或用 /会话列表 查看编号。");
+    }
+    this._startWatch(session, cwd);
+  }
+
+  _startWatch(session, cwd) {
+    this._stopWatch();
+    const filePath = path.join(
+      this.cfg.claude.sessionDir,
+      encodeCwd(cwd),
+      session.sessionId + ".jsonl"
+    );
+    if (!fs.existsSync(filePath)) {
+      return this.pusher.sendNotification("📡 会话文件不存在: " + filePath);
+    }
+    let offset = 0;
+    try {
+      offset = fs.statSync(filePath).size;
+    } catch {}
+    let idle = 0;
+    const seen = new Set();
+
+    const name = formatSessionName(session);
+    this.pusher.sendNotification(
+      `📡 开始盯会话「${name.slice(0, 30)}」，实时推送 VSCode 侧进展。发 /不盯 停止。`
+    );
+
+    const timer = setInterval(async () => {
+      try {
+        const size = fs.statSync(filePath).size;
+        if (size > offset) {
+          const buf = Buffer.alloc(size - offset);
+          const fd = fs.openSync(filePath, "r");
+          fs.readSync(fd, buf, 0, size - offset, offset);
+          fs.closeSync(fd);
+          offset = size;
+          idle = 0;
+          const lines = buf.toString("utf8").split("\n").filter(Boolean);
+          for (const line of lines) {
+            const ev = this._parseWatchEvent(line);
+            if (!ev) continue;
+            const sig = ev.role + ":" + ev.text.slice(0, 40);
+            if (seen.has(sig)) continue;
+            seen.add(sig);
+            try {
+              await this.pusher.sendNotification(ev.text, "markdown");
+            } catch (e) {
+              this.log.error("盯推送失败", { err: e.message });
+            }
+          }
+        } else {
+          idle++;
+          if (idle >= 10) {
+            // 15s 无更新（1.5s × 10）
+            this._stopWatch();
+            this.pusher.sendNotification("📡 会话已安静（15s 无新消息），监控结束。");
+          }
+        }
+      } catch (e) {
+        this.log.error("盯监控异常", { err: e.message });
+        this._stopWatch();
+        this.pusher.sendNotification("📡 监控异常，已停止。");
+      }
+    }, 1500);
+
+    this.watchInfo = { timer, filePath, sessionId: session.sessionId };
+    this.log.info("开始盯会话", {
+      sessionId: session.sessionId.slice(0, 8),
+      filePath,
+    });
+  }
+
+  _stopWatch() {
+    if (this.watchInfo && this.watchInfo.timer) {
+      clearInterval(this.watchInfo.timer);
+      this.watchInfo = null;
+      return true;
+    }
+    return false;
+  }
+
+  async _handleUnwatch(ctx) {
+    const stopped = this._stopWatch();
+    await this.pusher.sendNotification(
+      stopped ? "📡 已停止监控。" : "📡 当前没有进行中的监控。"
+    );
+  }
+
+  _parseWatchEvent(line) {
+    try {
+      const d = JSON.parse(line);
+      if (d.type === "user") {
+        const c = d.message && d.message.content;
+        let text = "";
+        if (typeof c === "string") text = c;
+        else if (Array.isArray(c)) {
+          text = c
+            .filter((i) => i && i.type === "text" && i.text)
+            .map((i) => i.text)
+            .join("\n");
+        }
+        if (text && text.trim()) {
+          return { role: "user", text: "🧑 你: " + text.trim().slice(0, 200) };
+        }
+      }
+      if (d.type === "assistant") {
+        const c = d.message && d.message.content;
+        if (Array.isArray(c)) {
+          const parts = [];
+          for (const item of c) {
+            if (item && item.type === "text" && item.text && item.text.trim()) {
+              parts.push("🤖 " + item.text.trim());
+            } else if (item && item.type === "tool_use" && item.name) {
+              parts.push("🔧 调用工具: " + item.name);
+            }
+          }
+          if (parts.length) {
+            return { role: "assistant", text: parts.join("\n").slice(0, 400) };
+          }
+        }
+      }
+    } catch {}
+    return null;
   }
 }
 

@@ -60,6 +60,9 @@ function loadConfig() {
       maxBytes: 2048,
       tokenCacheMs: 5 * 60 * 1000,
       earlyRefreshMs: 5 * 60 * 1000,
+      heartbeatStartMs: 30 * 1000, // 长任务心跳启动阈值
+      heartbeatIntervalMs: 20 * 1000, // 心跳间隔
+      completeNotifyMs: 60 * 1000, // 超过该时长任务完成后补"完成"总结
     },
     tunnel: {
       enabled: process.env.ENABLE_TUNNEL === "1",
