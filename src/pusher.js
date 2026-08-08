@@ -25,6 +25,26 @@ function splitByBytes(text, maxBytes) {
   return chunks;
 }
 
+/**
+ * 跨端换行适配：企业微信智能机器人 markdown 在安卓端会把裸 \n 合并到一行，
+ * 官方规避方案是在每行开头加无序列表符号 "- " 才能强制换行（引用块 > 在移动端不可靠）。
+ * 对非 markdown 结构行补 "- " 前缀；已有引用/列表/标题/表格等结构行保留原样。
+ * @param {string} text
+ * @returns {string}
+ */
+function fixNewlines(text) {
+  const lines = text.split("\n");
+  return lines
+    .map((line, i) => {
+      if (i === 0) return line; // 首行不加前缀（通常是对话头/标题）
+      if (!line.trim()) return line; // 空行保留
+      // 已是 markdown 结构行（引用/列表/标题/代码块/表格）则保留
+      if (/^(>\s|\*\s|-\s|#|\s*```|\|)/.test(line)) return line;
+      return "- " + line;
+    })
+    .join("\n");
+}
+
 class Pusher {
   constructor(cfg, api, log) {
     this.cfg = cfg;
@@ -125,7 +145,7 @@ class Pusher {
       if (i === 0) body = head + body;
       if (truncated && i === parts.length - 1) body += "\n…[已截断，详见本地]";
       try {
-        await this.sendNotification(body);
+        await this.sendNotification(fixNewlines(body));
       } catch (e) {
         this.log.error("推送失败", { err: e.message });
       }
@@ -198,11 +218,11 @@ class Pusher {
 
     const head = `[${taskName}]${durationMs ? ` (耗时 ${Math.round(durationMs / 1000)}s)` : ""}\n`;
     try {
-      await this.sendNotification(head + body, "markdown");
+      await this.sendNotification(fixNewlines(head + body), "markdown");
     } catch (e) {
       this.log.error("推送失败", { err: e.message });
     }
   }
 }
 
-module.exports = { Pusher, splitByBytes };
+module.exports = { Pusher, splitByBytes, fixNewlines };
