@@ -1,0 +1,16 @@
+{
+  "name": "wecom-claude-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "企业微信 ↔ Claude Code 远程控制桥接系统",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node test/crypto.test.js && node test/commands.test.js && node test/mock-callback.test.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "dotenv": "^16.4.0",
+    "express": "^4.19.0",
+    "zod": "^4.4.3"
+  }
+}

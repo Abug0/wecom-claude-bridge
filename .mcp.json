@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "wecom_approver": {
+      "command": "node",
+      "args": [
+        "/path\\projects\\wecom-claude-bridge\\src\\approver\\mcp-server.js"
+      ],
+      "env": {
+        "BRIDGE_PORT": "8787",
+        "APPROVER_TIMEOUT_MS": "300000"
+      }
+    }
+  }
+}
