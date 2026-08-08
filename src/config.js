@@ -22,6 +22,18 @@ function loadConfig() {
           : null,
       bridgeSecret: process.env.BRIDGE_SECRET || null,
     },
+    bot: {
+      // 智能机器人通道（API 模式-长连接），作为对话流式默认通道
+      enabled: process.env.WECOM_BOT_ENABLED === "1",
+      botId: process.env.WECOM_BOT_ID || "",
+      botSecret: process.env.WECOM_BOT_SECRET || "",
+      wsUrl: process.env.WECOM_BOT_WS || "wss://openws.work.weixin.qq.com",
+      // 流式分片间隔（毫秒）与超时兜底
+      streamIntervalMs: Number(process.env.WECOM_BOT_STREAM_INTERVAL_MS || 800),
+      streamIdleTimeoutMs: Number(process.env.WECOM_BOT_STREAM_IDLE_TIMEOUT_MS || 60000),
+      streamTotalTimeoutMs: Number(process.env.WECOM_BOT_STREAM_TOTAL_TIMEOUT_MS || 120000),
+      reconnectMaxMs: Number(process.env.WECOM_BOT_RECONNECT_MAX_MS || 30000),
+    },
     claude: {
       bin: process.env.CLAUDE_BIN || "/home/user\\USER\\.local\\bin\\claude.exe",
       workdir: process.env.WORKDIR || "/path\\projects\\PROJECT",

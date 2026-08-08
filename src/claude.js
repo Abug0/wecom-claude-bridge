@@ -398,20 +398,29 @@ class ClaudeRunner {
 
   async _run(job) {
     const start = Date.now();
-    await this.pusher.pushSectioned(
-      job.taskName,
-      `⏳ 开始处理，队列剩余 ${this.queue.length} 条…`
-    );
+
+    // 开启智能机器人流式会话（若 bot 可用），对话内容走打字机
+    let streamStarted = false;
+    if (this.pusher && typeof this.pusher.beginTask === "function") {
+      streamStarted = this.pusher.beginTask(job.taskName, job.reqId);
+    }
+
+    // 开始处理提示：有流式则作为流式首片，否则走自建应用
+    const startHint = `⏳ 开始处理，队列剩余 ${this.queue.length} 条…`;
+    if (streamStarted && this.pusher.pushStyled) {
+      await this.pusher.pushStyled(job.taskName, startHint, "plain");
+    } else {
+      await this.pusher.pushSectioned(job.taskName, startHint);
+    }
 
     // 思考/工具事件去重（各推一次）
     let pushedThinking = false;
-    let pushedTool = false;
 
     try {
       const args = this._buildArgs(job);
       this.log.info("执行 claude", { taskName: job.taskName, args: args.join(" ") });
 
-      // 类型化增量处理：思考/工具即时推送（去重），回复仅累积不推送
+      // 类型化增量处理：思考/工具走流式分片（去重），回复仅累积不推送
       let replyBuf = "";
       const onPartial = ({ kind, text }) => {
         if (kind === "reply") {
@@ -422,9 +431,6 @@ class ClaudeRunner {
             this.pusher.pushStyled(job.taskName, "思考中…", "thinking").catch(() => {});
           }
         } else if (kind === "tool") {
-          if (!pushedTool) {
-            pushedTool = true;
-          }
           // 每个工具调用推一条（可能有多个工具）
           this.pusher.pushStyled(job.taskName, text, "tool").catch(() => {});
         }
@@ -447,6 +453,10 @@ class ClaudeRunner {
       this.log.error("claude 执行异常", { err: e.message });
       await this.pusher.pushSectioned(job.taskName, "❌ 执行失败: " + e.message);
     } finally {
+      // 结束流式会话（未 finish 则用最终结果定型）
+      if (this.pusher && typeof this.pusher.endTask === "function") {
+        await this.pusher.endTask(job.taskName);
+      }
       this.registry.touchTask(encodeCwd(job.cwd), job.taskName);
     }
   }

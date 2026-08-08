@@ -27,7 +27,15 @@ const cfg = {
   approver: { timeoutMs: 60000 },
   pusher: { maxChunks: 6, maxBytes: 2048, tokenCacheMs: 60000, earlyRefreshMs: 10000 },
 };
-const approver = new Approver(cfg, mockApi, { pushSectioned: async (n, t) => mockApi.sendText(t) }, log);
+const approver = new Approver(
+  cfg,
+  mockApi,
+  {
+    pushSectioned: async (n, t) => mockApi.sendText(t),
+    sendNotification: async (t) => mockApi.sendText(t),
+  },
+  log
+);
 
 const express = require("express");
 const app = express();

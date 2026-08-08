@@ -50,7 +50,12 @@ class Approver {
     ];
 
     try {
-      await this.api.sendText(lines.join("\n"));
+      // 先结束当前流式回复（授权前已输出的部分定型），授权完成后新起一条流
+      if (this.pusher && typeof this.pusher.endTask === "function") {
+        await this.pusher.endTask(null, null, true);
+      }
+      // 权限确认走统一主动推送（bot 可用走 bot，否则自建应用）
+      await this.pusher.sendNotification(lines.join("\n"));
     } catch (e) {
       this.log.error("权限确认推送失败", { err: e.message });
       this.pending.delete(id);

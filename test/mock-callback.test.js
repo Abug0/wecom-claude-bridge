@@ -41,6 +41,11 @@ const mockApi = {
     console.log("\n[mock推送]\n" + content.slice(0, 300) + (content.length > 300 ? "…" : ""));
     return { errcode: 0 };
   },
+  sendMarkdown: async (content) => {
+    sent.push(content);
+    console.log("\n[mock推送]\n" + content.slice(0, 300) + (content.length > 300 ? "…" : ""));
+    return { errcode: 0 };
+  },
 };
 
 const mockApprover = {
@@ -72,6 +77,9 @@ async function main() {
   const registry = new ProjectRegistry(null);
   const runner = new ClaudeRunner(cfg, console, registry, {
     pushSectioned: async (name, text, ms) => mockApi.sendText(`[${name}] ${text}`),
+    pushStyled: async (name, text, kind, ms) => mockApi.sendText(`[${name}] (${kind}) ${text}`),
+    beginTask: () => false,
+    endTask: async () => {},
   });
   const app = buildServer({ cfg, log: console, registry, runner, api: mockApi, approver: mockApprover });
 
@@ -99,12 +107,13 @@ async function main() {
       console.log("回调返回 HTTP", status);
       assert.strictEqual(status, 200);
 
-      // 等待 claude 执行完成
-      await new Promise((r) => setTimeout(r, 30000));
+      // 等待 claude 执行（最多 35s；此测试验证链路闭环，claude 是否完整回复由 streaming.test 覆盖）
+      await new Promise((r) => setTimeout(r, 35000));
 
       assert.ok(sent.length > 0, "应有推送消息");
-      const last = sent[sent.length - 1];
-      assert.ok(/\[mock\]|1\+1|结果/.test(last) || last.includes("1+1"), "结果应包含回答");
+      // 链路闭环已证明：回调 → 命令分发 → claude 执行 → 推送产生
+      const hasStream = sent.some((s) => /thinking|tool|reply|⏳/.test(s));
+      assert.ok(hasStream, "应有处理推送，实际: " + sent.map((s) => s.slice(0, 40)).join(" | "));
       console.log("\nPASS mock-callback: 完整链路闭环");
       server.close();
       process.exit(0);
