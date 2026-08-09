@@ -1317,13 +1317,35 @@ class ClaudeRunner {
   async _handleModel(ctx, cmd) {
     if (!cmd.model) {
       const def = this._defaultModel();
-      return this.pusher.sendNotification(
-        `默认模型: ${def}\n当前覆盖: ${this.model || "无（用默认）"}\n切换: /model <模型ID>`
-      );
+      const lines = [
+        `默认模型: ${def}`,
+        `当前覆盖: ${this.model || "无（用默认）"}`,
+        "",
+        "常用可选（按当前服务商）：",
+        ...this._modelSuggestions().map((m, i) => `  ${i + 1}. ${m}${m === def ? " 👈默认" : ""}`),
+        "",
+        "切换: /model <模型ID>",
+      ];
+      return this.pusher.sendNotification(lines.join("\n"));
     }
     this.model = cmd.model.trim();
     await this.pusher.sendNotification(`✅ 已切换模型为「${this.model}」，下一条消息生效。`);
     this.log.info("切换模型", { model: this.model });
+  }
+
+  /**
+   * 常用模型建议列表（服务商为 deepseek 聚合代理，未支持动态查询）
+   */
+  _modelSuggestions() {
+    const list = [
+      "deepseek-v4-flash[1m]",
+      "deepseek-v4-flash",
+      "deepseek-v4-pro",
+      "deepseek-v4",
+    ];
+    const def = this._defaultModel();
+    if (!list.includes(def)) list.unshift(def);
+    return list;
   }
 
   /**
