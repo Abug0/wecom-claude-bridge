@@ -25,9 +25,14 @@ function parseCommand(content) {
       return { type: "project", selector: rest };
     }
     case "新开": {
-      const [name, ...p] = rest.split(/\s+/);
-      if (!name) return { type: "usage", hint: "用法: /新开 <任务名> [提示词]" };
-      return { type: "new", taskName: name, prompt: p.join(" ") || null };
+      if (!rest) return { type: "usage", hint: "用法: /新开 <任务名> [提示词]，或 /新开 <提示词>（自动命名）" };
+      const words = rest.split(/\s+/);
+      // 第一个词短（≤8 字符）→ 视为任务名；否则整个视为提示词，名字自动生成
+      if (words[0].length <= 8) {
+        const [name, ...p] = words;
+        return { type: "new", taskName: name, prompt: p.join(" ") || null };
+      }
+      return { type: "new", taskName: null, prompt: rest };
     }
     case "切换": {
       if (!rest) return { type: "usage", hint: "用法: /切换 <任务名或编号>" };

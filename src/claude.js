@@ -218,14 +218,18 @@ class ClaudeRunner {
     const proj = this._ensureProject();
     const projKey = encodeCwd(proj.cwd);
     const sessionId = crypto.randomUUID();
+    // 任务名未指定 → 用第一句 prompt 自动命名
+    const taskName =
+      cmd.taskName ||
+      (cmd.prompt ? cmd.prompt.replace(/\s+/g, " ").trim().slice(0, 20) : "微信-" + sessionId.slice(0, 8));
     const task = { sessionId, cwd: proj.cwd };
-    this.registry.addTask(projKey, cmd.taskName, task);
-    this.registry.setCurrentTask(projKey, cmd.taskName);
-    this.log.info("新开任务", { taskName: cmd.taskName, sessionId });
+    this.registry.addTask(projKey, taskName, task);
+    this.registry.setCurrentTask(projKey, taskName);
+    this.log.info("新开任务", { taskName, sessionId });
 
     if (cmd.prompt) {
       this.enqueue({
-        taskName: cmd.taskName,
+        taskName,
         sessionId,
         cwd: proj.cwd,
         prompt: cmd.prompt,
@@ -233,8 +237,8 @@ class ClaudeRunner {
       });
     } else {
       await this.pusher.pushSectioned(
-        cmd.taskName,
-        `已新开任务「${cmd.taskName}」\n发送任意消息即可开始。`
+        taskName,
+        `已新开任务「${taskName}」\n发送任意消息即可开始。`
       );
     }
   }
@@ -539,9 +543,10 @@ class ClaudeRunner {
           relay: true,
         });
       }
-      // 无可用会话 → 开新会话
+      // 无可用会话 → 开新会话（用第一句 prompt 自动命名，避免"微信-xxx"无意义名）
       const sessionId = crypto.randomUUID();
-      const taskName = "微信-" + sessionId.slice(0, 8);
+      const autoName = cmd.prompt.replace(/\s+/g, " ").trim().slice(0, 20);
+      const taskName = autoName || "微信-" + sessionId.slice(0, 8);
       this.registry.addTask(projKey, taskName, { sessionId, cwd: proj.cwd });
       this.registry.setCurrentTask(projKey, taskName);
       this.log.info("开新会话处理消息", { taskName, sessionId });
