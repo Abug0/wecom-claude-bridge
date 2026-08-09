@@ -21,6 +21,7 @@ class ClaudeRunner {
     this.watchInfo = null; // 会话实时监控状态（/盯 用）
     this.permissionMode = cfg.claude.permissionMode; // 当前权限模式（/模式 可切换）
     this.aborted = false; // /停止 中止标志
+    this.model = null; // 当前模型覆盖（/model 可切换，null=用默认）
   }
 
   /**
@@ -90,6 +91,14 @@ class ClaudeRunner {
       }
       case "stop": {
         await this._handleStop(ctx);
+        break;
+      }
+      case "model": {
+        await this._handleModel(ctx, cmd);
+        break;
+      }
+      case "compact": {
+        await this._handleCompact(ctx);
         break;
       }
       case "prompt": {
@@ -750,6 +759,10 @@ class ClaudeRunner {
     if (allowed.length) {
       base.push("--allowedTools", allowed.join(" "));
     }
+    // /model 切换模型（未设置则用默认）
+    if (this.model) {
+      base.push("--model", this.model);
+    }
     if (job.isNew) {
       return [...base, "--session-id", job.sessionId, "--name", job.taskName, job.prompt];
     }
@@ -1114,6 +1127,69 @@ class ClaudeRunner {
         : "⏹ 已中止当前任务。"
     );
     this.log.info("中止任务", { queueN });
+  }
+
+  /**
+   * /model [模型ID]：查看或切换模型（下一条消息生效）
+   */
+  async _handleModel(ctx, cmd) {
+    if (!cmd.model) {
+      return this.pusher.sendNotification(
+        `当前模型: ${this.model || "默认（未覆盖）"}\n切换: /model <模型ID>`
+      );
+    }
+    this.model = cmd.model.trim();
+    await this.pusher.sendNotification(`✅ 已切换模型为「${this.model}」，下一条消息生效。`);
+    this.log.info("切换模型", { model: this.model });
+  }
+
+  /**
+   * /compact：压缩当前会话上下文——读取最近对话历史，生成摘要并展示，
+   * 提示用 /新开 带摘要继续（旧会话保留）。
+   */
+  async _handleCompact(ctx) {
+    const proj = this._ensureProject();
+    const key = encodeCwd(proj.cwd);
+    const cur = this.registry.getCurrentTask(key);
+    if (!cur) {
+      return this.pusher.sendNotification("📋 当前无任务可压缩。");
+    }
+    const history = readSessionHistory({
+      sessionDir: this.cfg.claude.sessionDir,
+      cwd: cur.cwd,
+      sessionId: cur.sessionId,
+      limit: 30,
+    });
+    if (!history.length) {
+      return this.pusher.sendNotification("📋 会话历史为空，无需压缩。");
+    }
+    await this.pusher.sendNotification("📋 正在压缩上下文，生成会话摘要…");
+    const summary = await this._summarize(history, cur.cwd);
+    if (!summary || summary.startsWith("❌")) {
+      return this.pusher.sendNotification("❌ 摘要生成失败: " + summary);
+    }
+    const msg = `📋 **会话摘要**（${cur.name}）：\n\n${summary}\n\n---\n💡 发 /新开 <任务名> 并把以上摘要作为提示词，即可带摘要开新会话继续（旧会话保留）。`;
+    await this.pusher.sendNotification(msg);
+    this.log.info("已生成会话摘要", { task: cur.name });
+  }
+
+  /**
+   * 用 claude 生成对话摘要（临时会话，不干扰当前任务）
+   */
+  async _summarize(history, cwd) {
+    try {
+      const text = history
+        .map((m) => (m.role === "user" ? "用户: " : "AI: ") + m.text)
+        .join("\n")
+        .slice(0, 30000);
+      const prompt = `请为以下 AI 对话生成精炼摘要（保留：任务目标、已做的关键决定、重要结论、未完成事项。300 字以内）：\n\n${text}`;
+      const sessionId = crypto.randomUUID();
+      const args = this._buildArgs({ sessionId, cwd, isNew: true, prompt });
+      const { code, stdout, stderr, error, result } = await this._spawn(args, cwd, () => {});
+      return (result || this._extractResult(stdout, stderr, code, error) || "").trim();
+    } catch (e) {
+      return "❌ " + e.message;
+    }
   }
 
   /**
