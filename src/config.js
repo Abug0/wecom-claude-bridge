@@ -35,13 +35,11 @@ function loadConfig() {
       reconnectMaxMs: Number(process.env.WECOM_BOT_RECONNECT_MAX_MS || 30000),
     },
     claude: {
-      bin: process.env.CLAUDE_BIN || "/home/user\\USER\\.local\\bin\\claude.exe",
-      workdir: process.env.WORKDIR || "/path\\projects\\PROJECT",
-      sessionDir: process.env.SESSION_DIR || "/home/user\\USER\\.claude\\projects",
+      bin: process.env.CLAUDE_BIN || "claude",
+      workdir: process.env.WORKDIR || process.cwd(),
+      sessionDir: process.env.SESSION_DIR || path.join(process.env.USERPROFILE || process.env.HOME || "~", ".claude", "projects"),
       permissionMode: process.env.CLAUDE_PERMISSION_MODE || "default",
-      gitBashPath:
-        process.env.CLAUDE_CODE_GIT_BASH_PATH ||
-        "D:\\devtools\\git\\Git\\bin\\bash.exe",
+      gitBashPath: process.env.CLAUDE_CODE_GIT_BASH_PATH || "bash",
       permissionPromptTool: "mcp__wecom_approver__approval_prompt",
       // 任务完成后自动触发 VSCode 深链打开会话（默认开，VSCODE_AUTO_OPEN=0 关闭）
       vscodeAutoOpen: process.env.VSCODE_AUTO_OPEN !== "0",
@@ -55,7 +53,7 @@ function loadConfig() {
     registry: {
       file:
         process.env.REGISTRY_FILE ||
-        "/home/user\\USER\\.claude\\wecom-bridge\\sessions.json",
+        path.join(process.env.USERPROFILE || process.env.HOME || "~", ".claude", "wecom-bridge", "sessions.json"),
     },
     pusher: {
       maxChunks: 6,

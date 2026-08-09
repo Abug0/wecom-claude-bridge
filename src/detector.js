@@ -18,8 +18,8 @@ function readTail(filePath, maxBytes = 65536) {
 
 /**
  * 扫描项目目录下的 jsonl，识别最近活跃的 VSCode 会话
- * @param {string} sessionDir 如 /home/user\USER\.claude\projects
- * @param {string} cwd 工作目录，如 /path\projects\PROJECT
+ * @param {string} sessionDir 如 ~/.claude/projects
+ * @param {string} cwd 工作目录，如 /path/to/project
  * @returns {{sessionId: string, cwd: string, slug: string} | null}
  */
 function detectActiveSession({ sessionDir, cwd }) {
