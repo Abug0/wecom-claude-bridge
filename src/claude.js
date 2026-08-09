@@ -13,14 +13,16 @@ class ClaudeRunner {
     this.log = log;
     this.registry = registry;
     this.pusher = pusher;
-    this.queue = [];
-    this.running = false;
-    this.active = null;
-    this.activeJobName = null; // 当前正在执行的任务名（/状态 用）
-    this.activeStartedAt = null; // 当前任务开始时间戳
+    this.queues = new Map(); // sessionId -> job[]（同一会话串行，不同会话可并行）
+    this.running = new Set(); // 正在执行的 sessionId
+    this.actives = new Map(); // sessionId -> claude 子进程
+    this.activeJobs = new Map(); // sessionId -> { taskName, startedAt }（/状态 显示多个运行中任务）
+    this.MAX_CONCURRENT = 3; // 最多同时执行 3 个会话
+    this.activeJobName = null; // 兼容旧引用（最近任务名）
+    this.activeStartedAt = null;
     this.watchInfo = null; // 会话实时监控状态（/盯 用）
     this.permissionMode = cfg.claude.permissionMode; // 当前权限模式（/模式 可切换）
-    this.aborted = false; // /停止 中止标志
+    this.aborting = new Set(); // /停止 待中止的 sessionId 集合（并行安全）
     this.model = null; // 当前模型覆盖（/model 可切换，null=用默认）
   }
 
@@ -99,6 +101,14 @@ class ClaudeRunner {
       }
       case "compact": {
         await this._handleCompact(ctx);
+        break;
+      }
+      case "history": {
+        await this._handleHistory(ctx, cmd);
+        break;
+      }
+      case "export": {
+        await this._handleExport(ctx, cmd);
         break;
       }
       case "prompt": {
@@ -277,6 +287,112 @@ class ClaudeRunner {
     }
     lines.push("—— 回复 /继续 <提示词> 或直接发消息接着干。");
     await this.pusher.pushSectioned(displayName, lines.join("\n"));
+  }
+
+  /**
+   * 解析 /历史、/导出 的目标会话
+   * 无 selector → 当前任务；否则按任务名/编号（先绑定任务，后 VSCode 会话）
+   */
+  _resolveSession(projKey, cwd, selector) {
+    if (!selector) {
+      const cur = this.registry.getCurrentTask(projKey);
+      return cur ? { sessionId: cur.sessionId, cwd: cur.cwd || cwd } : null;
+    }
+    // 先找绑定任务
+    const task = this.registry.findTask(projKey, selector);
+    if (task) return { sessionId: task.sessionId, cwd: task.cwd || cwd, name: task.name };
+    // 再按 VSCode 会话编号（listRecentSessions 的第 N 个）
+    if (/^\d+$/.test(selector)) {
+      const recent = listRecentSessions({
+        sessionDir: this.cfg.claude.sessionDir,
+        cwd,
+        limit: 20,
+      });
+      const idx = parseInt(selector, 10) - 1;
+      if (recent[idx]) {
+        return { sessionId: recent[idx].sessionId, cwd, name: formatSessionName(recent[idx]) };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * /历史 [编号|任务名]：查看会话最近对话（不接管、不执行）
+   */
+  async _handleHistory(ctx, cmd) {
+    const proj = this._ensureProject();
+    const projKey = encodeCwd(proj.cwd);
+    const session = this._resolveSession(projKey, proj.cwd, cmd.selector);
+    if (!session) {
+      return this.pusher.sendNotification("⚠️ 未找到会话。用 /会话列表 查看编号，或 /历史 <任务名>。");
+    }
+    const history = readSessionHistory({
+      sessionDir: this.cfg.claude.sessionDir,
+      cwd: session.cwd,
+      sessionId: session.sessionId,
+      limit: 15,
+    });
+    if (!history.length) {
+      return this.pusher.sendNotification("📋 该会话暂无可见历史。");
+    }
+    const lines = [
+      `📋 会话历史（${session.name || session.sessionId.slice(0, 8)}）：`,
+      "",
+    ];
+    history.forEach((m) => {
+      const who = m.role === "user" ? "🧑 你" : "🤖 Claude";
+      const text = m.text.length > 150 ? m.text.slice(0, 150) + "…" : m.text;
+      lines.push(`【${who}】${text}`);
+      lines.push("");
+    });
+    lines.push("发 /接管 <编号> 接管，或 /继续 接着聊。");
+    await this.pusher.sendNotification(lines.join("\n"));
+  }
+
+  /**
+   * /导出 [编号|任务名]：导出会话全部对话为 markdown 文件
+   */
+  async _handleExport(ctx, cmd) {
+    const proj = this._ensureProject();
+    const projKey = encodeCwd(proj.cwd);
+    const session = this._resolveSession(projKey, proj.cwd, cmd.selector);
+    if (!session) {
+      return this.pusher.sendNotification("⚠️ 未找到会话。用 /会话列表 查看编号，或 /导出 <任务名>。");
+    }
+    const history = readSessionHistory({
+      sessionDir: this.cfg.claude.sessionDir,
+      cwd: session.cwd,
+      sessionId: session.sessionId,
+      limit: 0, // 全部
+    });
+    if (!history.length) {
+      return this.pusher.sendNotification("📋 该会话暂无可见消息。");
+    }
+    const md = [
+      `# 会话导出（${session.name || session.sessionId}）`,
+      `- 会话ID: ${session.sessionId}`,
+      `- 消息数: ${history.length}`,
+      `- 导出时间: ${new Date().toISOString()}`,
+      "",
+    ];
+    history.forEach((m, i) => {
+      md.push(`## ${i + 1}. ${m.role === "user" ? "用户" : "Claude"}`);
+      md.push("");
+      md.push(m.text);
+      md.push("");
+    });
+    try {
+      const dir = path.join(path.dirname(this.cfg.registry.file), "exports");
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const file = path.join(dir, `${session.sessionId.slice(0, 8)}.md`);
+      fs.writeFileSync(file, md.join("\n"), "utf8");
+      await this.pusher.sendNotification(
+        `📄 已导出 ${history.length} 条消息到:\n${file}`
+      );
+    } catch (e) {
+      this.log.error("导出失败", { err: e.message });
+      await this.pusher.sendNotification("❌ 导出失败: " + e.message);
+    }
   }
 
   async _handleSwitch(ctx, cmd) {
@@ -481,7 +597,7 @@ class ClaudeRunner {
     const proj = this._ensureProject();
     const projKey = encodeCwd(proj.cwd);
     const cur = this.registry.getCurrentTask(projKey);
-    const queueN = this.queue.length;
+    const queueN = [...this.queues.values()].reduce((n, q) => n + q.length, 0);
 
     if (!cur) {
       const lines = [
@@ -516,10 +632,12 @@ class ClaudeRunner {
     }
     const lines = [`📄 任务: ${displayName}`];
     if (cur.lastActiveAt) lines.push(`   最近活跃: ${cur.lastActiveAt.slice(0, 16)}`);
-    // 状态
-    if (this.activeJobName && this.activeStartedAt) {
-      const secs = Math.round((Date.now() - this.activeStartedAt) / 1000);
-      lines.push(`   状态: 正在执行「${this.activeJobName}」，已耗时 ${secs}s`);
+    // 状态（支持多会话并行：列出所有正在执行的任务）
+    if (this.activeJobs.size) {
+      for (const [, aj] of this.activeJobs) {
+        const secs = Math.round((Date.now() - aj.startedAt) / 1000);
+        lines.push(`   执行中: 「${aj.taskName}」已耗时 ${secs}s`);
+      }
       if (queueN > 0) lines.push(`   队列: 还有 ${queueN} 条等待`);
     } else if (queueN > 0) {
       lines.push(`   状态: 排队中，前面 ${queueN} 条`);
@@ -556,32 +674,43 @@ class ClaudeRunner {
   }
 
   /**
-   * 入队一条 claude 执行
+   * 入队一条 claude 执行（按会话分组：同一会话串行，不同会话可并行）
    */
   enqueue(job) {
-    this.queue.push(job);
-    // 已有任务在跑 → 新任务排队，提示用户
-    if (this.running && this.queue.length > 1) {
-      this._notify(`[${job.taskName}] ⏳ 已入队，前面还有 ${this.queue.length - 1} 条任务。`);
+    const sid = job.sessionId;
+    if (!this.queues.has(sid)) this.queues.set(sid, []);
+    const q = this.queues.get(sid);
+    q.push(job);
+    // 同一会话已有任务在跑 → 排队提示
+    if (this.running.has(sid) && q.length > 1) {
+      this._notify(`[${job.taskName}] ⏳ 已入队，该会话前面还有 ${q.length - 1} 条任务。`);
     }
-    if (!this.running) this._drain();
+    this._drain();
     return job;
   }
 
-  async _drain() {
-    this.running = true;
-    while (this.queue.length) {
-      const job = this.queue.shift();
-      await this._run(job);
+  /**
+   * 并发调度：每个 sessionId 一个串行队列，最多 MAX_CONCURRENT 个会话同时执行
+   */
+  _drain() {
+    for (const [sid, q] of this.queues) {
+      if (!this.running.has(sid) && q.length && this.running.size < this.MAX_CONCURRENT) {
+        const job = q.shift();
+        this.running.add(sid);
+        this._run(job).finally(() => {
+          this.running.delete(sid);
+          this._drain();
+        });
+      }
     }
-    this.running = false;
   }
 
   async _run(job) {
     const start = Date.now();
-    // 状态追踪（/状态 命令用）
+    // 状态追踪（/状态 命令用，支持多会话并行）
     this.activeJobName = job.taskName;
     this.activeStartedAt = start;
+    this.activeJobs.set(job.sessionId, { taskName: job.taskName, startedAt: start });
 
     // 长任务心跳（默认关闭）：超过阈值后定期推送"仍在运行"，间隔递增（避免刷屏）
     // 通过 HEARTBEAT_ENABLED=1 开启。流式本身实时展示进展 + 空闲超时兜底，心跳通常不需要。
@@ -612,7 +741,8 @@ class ClaudeRunner {
     }
 
     // 开始处理提示：有流式则作为流式首片，否则走自建应用
-    const startHint = `⏳ 开始处理，队列剩余 ${this.queue.length} 条…`;
+    const remain = (this.queues.get(job.sessionId) || []).length;
+    const startHint = `⏳ 开始处理，队列剩余 ${remain} 条…`;
     if (streamStarted && this.pusher.pushStyled) {
       await this.pusher.pushStyled(job.taskName, startHint, "plain");
     } else {
@@ -642,11 +772,11 @@ class ClaudeRunner {
         }
       };
 
-      const { code, stdout, stderr, error, result } = await this._spawn(args, job.cwd, onPartial);
+      const { code, stdout, stderr, error, result } = await this._spawn(args, job.cwd, onPartial, job.sessionId);
 
-      // 被 /停止 中止：不推送结果，直接收尾
-      if (this.aborted) {
-        this.aborted = false;
+      // 被 /停止 中止（按会话独立判断，并行安全）：不推送结果，直接收尾
+      if (this.aborting.has(job.sessionId)) {
+        this.aborting.delete(job.sessionId);
         return;
       }
 
@@ -672,8 +802,13 @@ class ClaudeRunner {
     } finally {
       if (hbTimer) clearTimeout(hbTimer);
       hbTimer = null;
-      this.activeJobName = null;
-      this.activeStartedAt = null;
+      this.activeJobs.delete(job.sessionId);
+      this.activeJobName = this.activeJobs.size
+        ? [...this.activeJobs.values()][0].taskName
+        : null;
+      this.activeStartedAt = this.activeJobs.size
+        ? [...this.activeJobs.values()][0].startedAt
+        : null;
       // 结束流式会话（未 finish 则用最终结果定型）
       if (this.pusher && typeof this.pusher.endTask === "function") {
         await this.pusher.endTask(job.taskName);
@@ -779,7 +914,7 @@ class ClaudeRunner {
     return args;
   }
 
-  _spawn(args, cwd, onPartial) {
+  _spawn(args, cwd, onPartial, sessionId) {
     return new Promise((resolve) => {
       const bin = this.cfg.claude.bin;
       // claude 在 Windows 上需要 git-bash；子进程需继承该环境变量
@@ -793,7 +928,7 @@ class ClaudeRunner {
         shell: false,
         windowsHide: true,
       });
-      this.active = child;
+      if (sessionId) this.actives.set(sessionId, child);
       let out = "",
         err = "",
         lastAt = Date.now(),
@@ -894,7 +1029,7 @@ class ClaudeRunner {
       const finish = (code, error) => {
         clearInterval(idle);
         if (total) clearTimeout(total);
-        this.active = null;
+        if (sessionId) this.actives.delete(sessionId);
         resolve({ code, stdout: out, stderr: err, error, result: finalResult });
       };
 
@@ -1099,34 +1234,43 @@ class ClaudeRunner {
   }
 
   /**
-   * /停止：中止当前正在执行的 claude 任务，并清空待处理队列。
-   * 通过 _run 里的 aborted 标志阻止结果推送。
+   * /停止：中止正在执行的任务并清空待处理队列。
+   * 并行安全：记录待中止的 sessionId，_run 各自判断。
    */
   async _handleStop(ctx) {
-    this.aborted = true;
-    const queueN = this.queue.length;
-    this.queue = [];
-    if (this.active) {
+    // 记录所有正在执行的会话为待中止
+    this.aborting = new Set(this.actives.keys());
+    // 清空所有会话队列
+    let queueN = 0;
+    for (const q of this.queues.values()) queueN += q.length;
+    this.queues.clear();
+    // 杀掉所有正在执行的 claude 进程
+    let killed = 0;
+    for (const [sid, child] of this.actives) {
       try {
-        this._killTree(this.active.pid);
-        this.log.info("已杀掉当前 claude 进程", { pid: this.active.pid });
+        this._killTree(child.pid);
+        killed++;
+        this.log.info("已杀掉 claude 进程", { sessionId: sid, pid: child.pid });
       } catch (e) {
         this.log.error("杀进程失败", { err: e.message });
       }
-      this.active = null;
     }
+    this.actives.clear();
+    this.running.clear();
+    this.activeJobs.clear();
     // 结束当前流式（用"已中止"定型）
     if (this.pusher && typeof this.pusher.endTask === "function") {
       await this.pusher.endTask(null, "⏹ 已中止", false);
     }
     this.activeJobName = null;
     this.activeStartedAt = null;
+    const parts = [];
+    if (killed) parts.push(`已中止 ${killed} 个正在执行的任务`);
+    if (queueN) parts.push(`清空 ${queueN} 条排队消息`);
     await this.pusher.sendNotification(
-      queueN > 0
-        ? `⏹ 已中止当前任务，并清空 ${queueN} 条排队消息。`
-        : "⏹ 已中止当前任务。"
+      parts.length ? "⏹ " + parts.join("，") + "。" : "⏹ 当前无任务在执行。"
     );
-    this.log.info("中止任务", { queueN });
+    this.log.info("中止任务", { killed, queueN });
   }
 
   /**
@@ -1185,7 +1329,7 @@ class ClaudeRunner {
       const prompt = `请为以下 AI 对话生成精炼摘要（保留：任务目标、已做的关键决定、重要结论、未完成事项。300 字以内）：\n\n${text}`;
       const sessionId = crypto.randomUUID();
       const args = this._buildArgs({ sessionId, cwd, isNew: true, prompt });
-      const { code, stdout, stderr, error, result } = await this._spawn(args, cwd, () => {});
+      const { code, stdout, stderr, error, result } = await this._spawn(args, cwd, () => {}, sessionId);
       return (result || this._extractResult(stdout, stderr, code, error) || "").trim();
     } catch (e) {
       return "❌ " + e.message;

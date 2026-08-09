@@ -1,7 +1,7 @@
 // 命令解析器
 // 支持：/项目 <路径|名称>、/新开 <任务名>、/切换 <任务名|编号>、/会话列表、/继续、/帮助、/重置、/状态、/pin、/别名
 
-const CMD_RE = /^\/(项目|新开|切换|列表|会话列表|接管|继续|重置|帮助|help|状态|pin|别名|盯|不盯|watch|unwatch|模式|重启|停止|中止|stop|model|compact)\s*(.*)$/;
+const CMD_RE = /^\/(项目|新开|切换|列表|会话列表|接管|继续|重置|帮助|help|状态|pin|别名|盯|不盯|watch|unwatch|模式|重启|停止|中止|stop|model|compact|历史|history|导出|export)\s*(.*)$/;
 
 /**
  * 解析微信消息
@@ -83,6 +83,14 @@ function parseCommand(content) {
     case "compact": {
       return { type: "compact" };
     }
+    case "历史":
+    case "history": {
+      return { type: "history", selector: rest || null };
+    }
+    case "导出":
+    case "export": {
+      return { type: "export", selector: rest || null };
+    }
     case "帮助":
     case "help":
     default:
@@ -105,6 +113,8 @@ const HELP_TEXT = `可用的命令：
 /停止               中止当前任务并清空排队消息
 /model [模型ID]    查看或切换模型（如 /model deepseek-v4-flash）
 /compact            压缩当前会话上下文（生成摘要）
+/历史 [编号]       查看某会话最近对话（不接管）
+/导出 [编号]       导出会话为 markdown 文件
 /pin <任务名|编号>   置顶/取消置顶会话（⭐）
 /别名 <任务名|编号> <新名>  给会话设置别名
 /重置                重置当前项目状态
