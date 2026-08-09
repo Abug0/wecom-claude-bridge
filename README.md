@@ -66,9 +66,29 @@ npm start
 
 然后在企业微信里给机器人发消息即可。
 
+> **Windows 用户必配**：`.env` 里需要设置 `CLAUDE_BIN`（claude 的完整路径）和 `CLAUDE_CODE_GIT_BASH_PATH`（git-bash 的 bash.exe 路径，claude 依赖它运行）。Linux/macOS 默认 `claude`/`bash` 即可。
+
 ### 5. VSCode 实时视图（可选）
 
 把 `vscode-live-viewer/` 复制到 `~/.vscode/extensions/` 下（重命名为 `local.wecom-live-viewer-0.1.0`），reload VSCode，点左侧"微信远程"图标。
+
+### 6. 在其他项目启用微信授权确认（可选）
+
+微信里的"允许/拒绝"授权确认，需要在你**想远程操作的 Claude Code 项目**里接入 `wecom_approver` MCP。在该项目的 `.mcp.json` 加入：
+
+```json
+{
+  "mcpServers": {
+    "wecom_approver": {
+      "command": "node",
+      "args": ["<桥接工程绝对路径>/src/approver/mcp-server.js"],
+      "env": { "BRIDGE_PORT": "8787", "APPROVER_TIMEOUT_MS": "300000" }
+    }
+  }
+}
+```
+
+同时在 `~/.claude/settings.json`（或项目设置）里让 claude 进程使用该授权工具（见 `src/config.js` 的 `permissionPromptTool`）。桥接自身已内置此配置（`.mcp.json`）。
 
 ## 📖 命令清单
 
