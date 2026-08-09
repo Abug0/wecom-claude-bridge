@@ -299,8 +299,8 @@ class LiveViewProvider {
 <head>
 <meta charset="utf-8">
 <style>
-  body { font-family: var(--vscode-font-family); font-size: 13px; margin: 0; padding: 8px; color: var(--vscode-foreground); }
-  .toolbar { display: flex; gap: 6px; margin-bottom: 8px; align-items: center; }
+  body { font-family: var(--vscode-font-family); font-size: 13px; margin: 0; padding: 8px; color: var(--vscode-foreground); display: flex; flex-direction: column; height: 100vh; box-sizing: border-box; }
+  .toolbar { display: flex; gap: 6px; margin-bottom: 8px; align-items: center; flex: none; }
   select { flex: 1; background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); padding: 3px; }
   button { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 3px 10px; cursor: pointer; }
   .msg { margin: 6px 0; padding: 6px 8px; border-radius: 4px; white-space: pre-wrap; word-break: break-word; }
@@ -316,7 +316,7 @@ class LiveViewProvider {
   .live.thinking { color: var(--vscode-descriptionForeground); font-style: italic; font-size: 12px; }
   .live.tool { color: var(--vscode-charts-orange, #d19a66); font-size: 12px; }
   .end-line { border-top: 1px dashed var(--vscode-panel-border); margin: 6px 0; color: var(--vscode-descriptionForeground); font-size: 11px; }
-  #list { overflow-y: auto; }
+  #list { flex: 1; overflow-y: auto; }
 </style>
 </head>
 <body>
@@ -334,6 +334,13 @@ class LiveViewProvider {
 
   function esc(s) {
     return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  // 等 DOM 布局完成后滚动到底部（最新消息）
+  function scrollToBottom() {
+    requestAnimationFrame(() => {
+      list.scrollTop = list.scrollHeight;
+    });
   }
 
   function render(messages) {
@@ -356,7 +363,7 @@ class LiveViewProvider {
       }
       return '';
     }).join('');
-    list.scrollTop = list.scrollHeight;
+    scrollToBottom();
   }
 
   function loadSession(sessionId) {
@@ -389,7 +396,7 @@ class LiveViewProvider {
       }
       list.appendChild(el);
     }
-    list.scrollTop = list.scrollHeight;
+    scrollToBottom();
   }
 
   sel.addEventListener('change', () => {
