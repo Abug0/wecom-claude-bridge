@@ -995,10 +995,10 @@ class ClaudeRunner {
           }
         } else {
           idle++;
-          if (idle >= 10) {
-            // 15s 无更新（1.5s × 10）
+          // 90s 无更新才停止（1.5s × 60）——思考间隙/等授权可能超 15s，别过早结束
+          if (idle >= 60) {
             this._stopWatch();
-            this.pusher.sendNotification("📡 会话已安静（15s 无新消息），监控结束。");
+            this.pusher.sendNotification("📡 会话已安静 90 秒（可能已结束），监控停止。发 /盯 <编号> 可继续盯。");
           }
         }
       } catch (e) {
