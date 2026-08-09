@@ -1358,55 +1358,59 @@ class ClaudeRunner {
   }
 
   /**
-   * 后台探测可用模型：对每个候选发一个极短 prompt，成功的写入缓存
+   * 后台探测可用模型：并行对每个候选发一个极短 prompt，成功的写入缓存
    */
   _probeModelsAsync(def) {
     const candidates = this._modelCandidates(def);
-    const results = [];
-    const run = async (i) => {
-      if (i >= candidates.length) {
-        this._writeModelCache(results);
-        if (results.length) {
-          await this.pusher.sendNotification(
-            "✅ 可用模型探测完成：\n" +
-              results.map((m) => `  - ${m}`).join("\n") +
-              "\n\n切换: /model <模型ID>"
-          );
-        } else {
-          await this.pusher.sendNotification(
-            "⚠️ 未探测到可用模型（可能服务商限制）。用 /model <ID> 手动指定试试。"
-          );
+    const probeOne = (m) =>
+      new Promise((resolve) => {
+        try {
+          const args = [
+            "-p",
+            "--verbose",
+            "--output-format",
+            "stream-json",
+            "--include-partial-messages",
+            "--permission-mode",
+            "bypassPermissions",
+            "--model",
+            m,
+            "--no-session-persistence",
+            "hi",
+          ];
+          this._spawn(args, this.cfg.claude.workdir, () => {}, null)
+            .then(({ code, result }) => {
+              if (code === 0 && result && !String(result).startsWith("❌")) {
+                this.log.info("模型探测成功", { model: m });
+                resolve(m);
+              } else {
+                this.log.info("模型探测失败", { model: m, code });
+                resolve(null);
+              }
+            })
+            .catch((e) => {
+              this.log.info("模型探测异常", { model: m, err: e.message });
+              resolve(null);
+            });
+        } catch {
+          resolve(null);
         }
-        return;
+      });
+    Promise.all(candidates.map(probeOne)).then((results) => {
+      const available = results.filter(Boolean);
+      this._writeModelCache(available);
+      if (available.length) {
+        this.pusher.sendNotification(
+          "✅ 可用模型探测完成：\n" +
+            available.map((m) => `  - ${m}`).join("\n") +
+            "\n\n切换: /model <模型ID>"
+        );
+      } else {
+        this.pusher.sendNotification(
+          "⚠️ 未探测到可用模型（可能服务商限制）。用 /model <ID> 手动指定试试。"
+        );
       }
-      const m = candidates[i];
-      try {
-        const args = [
-          "-p",
-          "--verbose",
-          "--output-format",
-          "stream-json",
-          "--include-partial-messages",
-          "--permission-mode",
-          "bypassPermissions",
-          "--model",
-          m,
-          "--no-session-persistence",
-          "hi",
-        ];
-        const { code, result } = await this._spawn(args, this.cfg.claude.workdir, () => {}, null);
-        if (code === 0 && result && !String(result).startsWith("❌")) {
-          results.push(m);
-          this.log.info("模型探测成功", { model: m });
-        } else {
-          this.log.info("模型探测失败", { model: m, code });
-        }
-      } catch (e) {
-        this.log.info("模型探测异常", { model: m, err: e.message });
-      }
-      run(i + 1);
-    };
-    run(0);
+    });
   }
 
   _modelCacheFile() {
