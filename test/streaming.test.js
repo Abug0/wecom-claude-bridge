@@ -15,11 +15,11 @@ for (const l of fs.readFileSync(path.join(__dirname, "..", ".env"), "utf8").spli
 
 const cfg = {
   claude: {
-    bin: env.CLAUDE_BIN || "/home/user\\USER\\.local\\bin\\claude.exe",
-    workdir: "/path\\projects\\PROJECT",
-    sessionDir: "/home/user\\USER\\.claude\\projects",
+    bin: env.CLAUDE_BIN || "claude",
+    workdir: process.cwd(),
+    sessionDir: env.SESSION_DIR || "~/.claude/projects",
     permissionMode: "bypassPermissions",
-    gitBashPath: env.CLAUDE_CODE_GIT_BASH_PATH || "D:\\devtools\\git\\Git\\bin\\bash.exe",
+    gitBashPath: env.CLAUDE_CODE_GIT_BASH_PATH || "bash",
     idleTimeoutMs: 180000,
     totalTimeoutMs: 180000,
   },
@@ -42,7 +42,7 @@ const runner = new ClaudeRunner(cfg, console, new ProjectRegistry(null), mockPus
 const job = {
   taskName: "样式测试",
   sessionId: "00000000-0000-4000-8000-000000000000",
-  cwd: "/path\\projects\\PROJECT",
+  cwd: process.cwd(),
   prompt: "用 Bash 运行 `echo 样式测试完成`，然后用一句话总结结果",
   isNew: false,
 };

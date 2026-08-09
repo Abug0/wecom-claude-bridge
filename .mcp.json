@@ -3,7 +3,7 @@
     "wecom_approver": {
       "command": "node",
       "args": [
-        "/path\\projects\\wecom-claude-bridge\\src\\approver\\mcp-server.js"
+        "./src/approver/mcp-server.js"
       ],
       "env": {
         "BRIDGE_PORT": "8787",

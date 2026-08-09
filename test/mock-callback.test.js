@@ -18,11 +18,11 @@ const cfg = {
     touser: "mockuser",
   },
   claude: {
-    bin: process.env.CLAUDE_BIN || "/home/user\\USER\\.local\\bin\\claude.exe",
-    workdir: "/path\\projects\\PROJECT",
-    sessionDir: process.env.SESSION_DIR || "/home/user\\USER\\.claude\\projects",
+    bin: process.env.CLAUDE_BIN || "claude",
+    workdir: process.cwd(),
+    sessionDir: process.env.SESSION_DIR || "~/.claude/projects",
     permissionMode: "bypassPermissions", // mock 测试用绕过，避免权限确认
-    gitBashPath: "D:\\devtools\\git\\Git\\bin\\bash.exe",
+    gitBashPath: process.env.CLAUDE_CODE_GIT_BASH_PATH || "bash",
     permissionPromptTool: "",
     idleTimeoutMs: 120000,
     totalTimeoutMs: 60000,

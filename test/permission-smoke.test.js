@@ -55,7 +55,7 @@ const server = app.listen(BRIDGE_PORT, "127.0.0.1", () => {
 
 // ---- 2. 启动 claude 触发权限 ----
 function runClaudeTest() {
-  const bin = "/home/user\\USER\\.local\\bin\\claude.exe";
+  const bin = process.env.CLAUDE_BIN || "claude";
   const args = [
     "-p",
     "--output-format",
@@ -64,12 +64,12 @@ function runClaudeTest() {
     "default",
     "--permission-prompt-tool",
     "mcp__wecom_approver__approval_prompt",
-    "用 Write 工具在 /path\\projects\\PROJECT 下创建一个文件 smoke-test-write.txt，内容写入 测试写文件 这几个字，然后告诉我你做了什么",
+    "用 Write 工具在当前工作目录创建一个文件 smoke-test-write.txt，内容写入 测试写文件 这几个字，然后告诉我你做了什么",
   ];
   console.log("启动 claude 触发权限确认…");
   const child = spawn(bin, args, {
-    cwd: "/path\\projects\\PROJECT",
-    env: { ...process.env, CLAUDE_CODE_GIT_BASH_PATH: "D:\\devtools\\git\\Git\\bin\\bash.exe" },
+    cwd: process.cwd(),
+    env: { ...process.env, CLAUDE_CODE_GIT_BASH_PATH: process.env.CLAUDE_CODE_GIT_BASH_PATH || "bash" },
     shell: false,
   });
   let out = "";

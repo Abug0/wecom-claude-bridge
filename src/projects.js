@@ -5,8 +5,8 @@ const path = require("path");
 
 /**
  * 复刻 Claude 的 cwd 编码：非字母数字字符替换为 '-'
- * @param {string} cwd 如 /path\projects\PROJECT
- * @returns {string} 如 encoded-project-key
+ * @param {string} cwd 如 /path/to/project
+ * @returns {string} 如 path-to-project
  */
 function encodeCwd(cwd) {
   return cwd

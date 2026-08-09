@@ -8,9 +8,9 @@ assert.strictEqual(p1.type, "prompt");
 assert.strictEqual(p1.prompt, "继续改这个bug");
 
 // 项目
-const p2 = parseCommand("/项目 d:\\codes\\projects\\PROJECT");
+const p2 = parseCommand("/项目 /path/to/project");
 assert.strictEqual(p2.type, "project");
-assert.strictEqual(p2.selector, "d:\\codes\\projects\\PROJECT");
+assert.strictEqual(p2.selector, "/path/to/project");
 
 // 新开
 const p3 = parseCommand("/新开 视频导出 帮我整理视频");
