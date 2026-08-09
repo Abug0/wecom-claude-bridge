@@ -1367,6 +1367,13 @@ class ClaudeRunner {
    */
   _defaultModel() {
     const candidates = [];
+    // settings.json 的 model 字段（CLI 实际生效，VSCode /model 切换写入处）优先
+    try {
+      const us = JSON.parse(
+        fs.readFileSync(path.join(process.env.USERPROFILE || "", ".claude", "settings.json"), "utf8")
+      );
+      if (us.model) candidates.push(us.model);
+    } catch {}
     try {
       const vs = JSON.parse(
         fs.readFileSync(
@@ -1377,12 +1384,6 @@ class ClaudeRunner {
       if (vs.claudeCode && vs.claudeCode.selectedModel) {
         candidates.push(vs.claudeCode.selectedModel);
       }
-    } catch {}
-    try {
-      const us = JSON.parse(
-        fs.readFileSync(path.join(process.env.USERPROFILE || "", ".claude", "settings.json"), "utf8")
-      );
-      if (us.model) candidates.push(us.model);
     } catch {}
     if (candidates.length) return candidates[0];
     return "deepseek-v4-flash[1m]";
