@@ -1316,13 +1316,41 @@ class ClaudeRunner {
    */
   async _handleModel(ctx, cmd) {
     if (!cmd.model) {
+      const def = this._defaultModel();
       return this.pusher.sendNotification(
-        `当前模型: ${this.model || "默认（未覆盖）"}\n切换: /model <模型ID>`
+        `默认模型: ${def}\n当前覆盖: ${this.model || "无（用默认）"}\n切换: /model <模型ID>`
       );
     }
     this.model = cmd.model.trim();
     await this.pusher.sendNotification(`✅ 已切换模型为「${this.model}」，下一条消息生效。`);
     this.log.info("切换模型", { model: this.model });
+  }
+
+  /**
+   * 读取实际使用的默认模型：优先 VSCode settings 的 claudeCode.selectedModel，
+   * 其次 ~/.claude/settings.json 的 model，最后 fallback 已知值。
+   */
+  _defaultModel() {
+    const candidates = [];
+    try {
+      const vs = JSON.parse(
+        fs.readFileSync(
+          path.join(process.env.APPDATA || "", "Code", "User", "settings.json"),
+          "utf8"
+        )
+      );
+      if (vs.claudeCode && vs.claudeCode.selectedModel) {
+        candidates.push(vs.claudeCode.selectedModel);
+      }
+    } catch {}
+    try {
+      const us = JSON.parse(
+        fs.readFileSync(path.join(process.env.USERPROFILE || "", ".claude", "settings.json"), "utf8")
+      );
+      if (us.model) candidates.push(us.model);
+    } catch {}
+    if (candidates.length) return candidates[0];
+    return "deepseek-v4-flash[1m]";
   }
 
   /**
