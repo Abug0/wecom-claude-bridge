@@ -44,6 +44,10 @@ function startupMaintenance(logger) {
 }
 
 function main() {
+  // stdout/stderr 断管道（如重定向到 /dev/null）时吞掉 EPIPE，避免死循环
+  process.stdout.on("error", () => {});
+  process.stderr.on("error", () => {});
+
   const cfg = loadConfig();
   assertValid(cfg);
 

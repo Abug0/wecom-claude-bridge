@@ -51,14 +51,8 @@ function write(level, msg, extra) {
     }
   }
   fs.appendFileSync(logPath(), line + "\n");
-  // 同时输出到控制台
-  const colored = {
-    INFO: "\x1b[32m",
-    WARN: "\x1b[33m",
-    ERROR: "\x1b[31m",
-  };
-  const color = colored[level] || "";
-  console.log(`${color}${line}\x1b[0m`);
+  // 不再写 console.log/stdout：重定向到 /dev/null 或管道断开时会产生 EPIPE 死循环，
+  // 且真实日志已写入 data/bridge-日期.log（按天滚动），stdout 副本无必要。
 }
 
 const log = {
