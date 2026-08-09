@@ -326,6 +326,7 @@ class BotClient {
       MsgType: "text",
       Content: content,
       FromUserName: fromUserId || body.from_userid || "",
+      ChatId: body.chatid || fromUserId || "", // 聊天域（群聊=chatid，单聊=userid）
       MsgId: body.msgid || crypto.randomUUID(),
     };
 

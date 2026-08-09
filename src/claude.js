@@ -28,6 +28,32 @@ class ClaudeRunner {
     this.thinkingEnabled = false; // /thinking 思考内容展示开关（默认只显示"思考中…"）
     this.pendingConfirm = null; // 自然语言命令待确认 { cmd, content }
     this.cronJobs = []; // 定时任务（持久化到 cron.json）
+    this.chatCurrent = new Map(); // "projKey::chatDomain" -> taskName（按聊天隔离当前任务）
+  }
+
+  /**
+   * 聊天域：群聊用 chatid，单聊用 userid，默认 "default"
+   */
+  _chatDomain(ctx) {
+    if (ctx && ctx.msg) return ctx.msg.ChatId || ctx.msg.FromUserName || "default";
+    return "default";
+  }
+
+  /** 按聊天取当前任务（该聊天未设置过则回退共享当前任务） */
+  _getCur(projKey, ctx) {
+    const k = projKey + "::" + this._chatDomain(ctx);
+    if (this.chatCurrent.has(k)) {
+      const name = this.chatCurrent.get(k);
+      // 该聊天明确设置过 → 取它自己的（任务不存在则 null，不串到共享）
+      return this.registry.getTask(projKey, name) || null;
+    }
+    return this.registry.getCurrentTask(projKey);
+  }
+
+  /** 按聊天设置当前任务（同时更新共享池，保证 /会话列表 一致） */
+  _setCur(projKey, ctx, taskName) {
+    this.chatCurrent.set(projKey + "::" + this._chatDomain(ctx), taskName);
+    this.registry.setCurrentTask(projKey, taskName);
   }
 
   /**
@@ -255,7 +281,7 @@ class ClaudeRunner {
       cwd: detected.cwd,
       slug: detected.slug,
     });
-    this.registry.setCurrentTask(projKey, name);
+    this._setCur(projKey, ctx, name);
     this.log.info("自动绑定 VSCode 会话", { name, sessionId: detected.sessionId });
     return { name, sessionId: detected.sessionId, cwd: detected.cwd };
   }
@@ -284,7 +310,7 @@ class ClaudeRunner {
     const me = this.registry.getProject(cfg.claude.workdir);
     this._currentProjectKey = projKey;
     const tasks = this.registry.listTasks(projKey);
-    const cur = this.registry.getCurrentTask(projKey);
+    const cur = this._getCur(projKey, ctx);
     const lines = [
       `已切换到项目「${proj.name}」`,
       `路径: ${proj.cwd}`,
@@ -306,7 +332,7 @@ class ClaudeRunner {
       (cmd.prompt ? cmd.prompt.replace(/\s+/g, " ").trim().slice(0, 20) : "微信-" + sessionId.slice(0, 8));
     const task = { sessionId, cwd: proj.cwd };
     this.registry.addTask(projKey, taskName, task);
-    this.registry.setCurrentTask(projKey, taskName);
+    this._setCur(projKey, ctx, taskName);
     this.log.info("新开任务", { taskName, sessionId });
 
     if (cmd.prompt) {
@@ -360,7 +386,7 @@ class ClaudeRunner {
       cwd: proj.cwd,
       slug: target.slug,
     });
-    this.registry.setCurrentTask(projKey, displayName);
+    this._setCur(projKey, ctx, displayName);
     this.log.info("接管 VSCode 会话", { name: displayName, sessionId: target.sessionId });
 
     // 读取会话历史，让用户先了解上下文
@@ -391,7 +417,7 @@ class ClaudeRunner {
    */
   _resolveSession(projKey, cwd, selector) {
     if (!selector) {
-      const cur = this.registry.getCurrentTask(projKey);
+      const cur = this._getCur(projKey, ctx);
       return cur ? { sessionId: cur.sessionId, cwd: cur.cwd || cwd } : null;
     }
     // 先找绑定任务
@@ -501,7 +527,7 @@ class ClaudeRunner {
         `未找到任务「${cmd.selector}」。用 /会话列表 查看当前项目任务。`
       );
     }
-    this.registry.setCurrentTask(projKey, task.name);
+    this._setCur(projKey, ctx, task.name);
     const displayName = task.alias || task.name;
     await this.pusher.pushSectioned(
       "切换",
@@ -518,7 +544,7 @@ class ClaudeRunner {
     const buildEntries = (cwd) => {
       const key = encodeCwd(cwd);
       const tasks = this.registry.listTasks(key);
-      const cur = this.registry.getCurrentTask(key);
+      const cur = this._getCur(key, ctx);
       const boundIds = new Set(tasks.map((t) => t.sessionId));
       // 所有 VSCode 会话（含已绑定的，但已绑定显示为任务名），建 sessionId → 信息索引
       const all = listRecentSessions({ sessionDir: this.cfg.claude.sessionDir, cwd, limit: 0 });
@@ -612,7 +638,7 @@ class ClaudeRunner {
   async _handlePrompt(ctx, cmd) {
     const proj = this._ensureProject();
     const projKey = encodeCwd(proj.cwd);
-    const cur = this.registry.getCurrentTask(projKey);
+    const cur = this._getCur(projKey, ctx);
     if (!cur) {
       // 无当前任务 → 自动识别 VSCode 会话并绑定（relay 标记接力）
       const bound = this._bindDetected(proj);
@@ -630,7 +656,7 @@ class ClaudeRunner {
       const autoName = cmd.prompt.replace(/\s+/g, " ").trim().slice(0, 20);
       const taskName = autoName || "微信-" + sessionId.slice(0, 8);
       this.registry.addTask(projKey, taskName, { sessionId, cwd: proj.cwd });
-      this.registry.setCurrentTask(projKey, taskName);
+      this._setCur(projKey, ctx, taskName);
       this.log.info("开新会话处理消息", { taskName, sessionId });
       return this.enqueue({ taskName, sessionId, cwd: proj.cwd, prompt: cmd.prompt, isNew: true });
     }
@@ -645,7 +671,7 @@ class ClaudeRunner {
 
   async _handleContinue(ctx, cmd) {    const proj = this._ensureProject();
     const projKey = encodeCwd(proj.cwd);
-    const cur = this.registry.getCurrentTask(projKey);
+    const cur = this._getCur(projKey, ctx);
     if (!cur) {
       // 无当前任务 → 尝试自动识别 VSCode 会话（relay 标记接力）
       const bound = this._bindDetected(proj);
@@ -671,7 +697,7 @@ class ClaudeRunner {
   async _handleReset(ctx) {
     const proj = this._ensureProject();
     const projKey = encodeCwd(proj.cwd);
-    const cur = this.registry.getCurrentTask(projKey);
+    const cur = this._getCur(projKey, ctx);
     if (cur) {
       this.registry.removeTask(projKey, cur.name);
       await this.pusher.pushSectioned("重置", `已重置，清除了当前任务「${cur.name}」`);
@@ -693,7 +719,7 @@ class ClaudeRunner {
   async _handleStatus(ctx) {
     const proj = this._ensureProject();
     const projKey = encodeCwd(proj.cwd);
-    const cur = this.registry.getCurrentTask(projKey);
+    const cur = this._getCur(projKey, ctx);
     const queueN = [...this.queues.values()].reduce((n, q) => n + q.length, 0);
 
     if (!cur) {
@@ -1319,7 +1345,7 @@ class ClaudeRunner {
     } else {
       // 无参数 → 盯当前任务会话
       const key = encodeCwd(cwd);
-      const cur = this.registry.getCurrentTask(key);
+      const cur = this._getCur(key, ctx);
       if (cur) session = { sessionId: cur.sessionId, cwd: cur.cwd };
     }
     if (!session) {
@@ -1888,7 +1914,7 @@ class ClaudeRunner {
   async _handleCompact(ctx) {
     const proj = this._ensureProject();
     const key = encodeCwd(proj.cwd);
-    const cur = this.registry.getCurrentTask(key);
+    const cur = this._getCur(key, ctx);
     if (!cur) {
       return this.pusher.sendNotification("📋 当前无任务可压缩。");
     }
