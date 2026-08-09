@@ -27,6 +27,7 @@ class ClaudeRunner {
     this.effort = null; // 当前推理努力程度（/effort，null=用默认）
     this.thinkingEnabled = false; // /thinking 思考内容展示开关（默认只显示"思考中…"）
     this.pendingConfirm = null; // 自然语言命令待确认 { cmd, content }
+    this.cronJobs = []; // 定时任务（持久化到 cron.json）
   }
 
   /**
@@ -151,6 +152,22 @@ class ClaudeRunner {
       }
       case "thinking": {
         await this._handleThinking(ctx, cmd);
+        break;
+      }
+      case "search": {
+        await this._handleSearch(ctx, cmd);
+        break;
+      }
+      case "cost": {
+        await this._handleCost(ctx);
+        break;
+      }
+      case "cron": {
+        await this._handleCron(ctx, cmd);
+        break;
+      }
+      case "sendfile": {
+        await this._handleSendFile(ctx, cmd);
         break;
       }
       case "prompt": {
@@ -879,7 +896,11 @@ class ClaudeRunner {
         }
       };
 
-      const { code, stdout, stderr, error, result } = await this._spawn(args, job.cwd, onPartial, job.sessionId);
+      const { code, stdout, stderr, error, result, usage, totalCost } = await this._spawn(args, job.cwd, onPartial, job.sessionId);
+      // 记录 token/成本
+      if (usage || totalCost) {
+        this._recordCost(job.sessionId, { usage: usage || {}, total_cost_usd: totalCost || 0 });
+      }
 
       // 被 /停止 中止（按会话独立判断，并行安全）：不推送结果，直接收尾
       if (this.aborting.has(job.sessionId)) {
@@ -1126,6 +1147,8 @@ class ClaudeRunner {
         lastAt = Date.now(),
         lineBuf = "";
       let finalResult = null;
+      let finalUsage = null;
+      let finalCost = 0;
 
       // 逐行解析 NDJSON 流（stream-json）
       // tool_use 的 input 通过 input_json_delta 流式累积，start 时为空
@@ -1177,6 +1200,9 @@ class ClaudeRunner {
               }
             }
           } else if (r.type === "result") {
+            // 记录 usage/成本（即使出错也记）
+            if (r.usage) finalUsage = r.usage;
+            if (r.total_cost_usd) finalCost = r.total_cost_usd;
             if (r.is_error) {
               // 错误详情在 errors 数组（result 常为空）
               const errMsg = (r.errors && r.errors[0]) || r.result || "未知错误";
@@ -1228,7 +1254,15 @@ class ClaudeRunner {
         clearInterval(idle);
         if (total) clearTimeout(total);
         if (sessionId) this.actives.delete(sessionId);
-        resolve({ code, stdout: out, stderr: err, error, result: finalResult });
+        resolve({
+          code,
+          stdout: out,
+          stderr: err,
+          error,
+          result: finalResult,
+          usage: finalUsage,
+          totalCost: finalCost,
+        });
       };
 
       child.on("close", (code) => finish(code, null));
@@ -1581,6 +1615,270 @@ class ClaudeRunner {
       );
     }
     this.log.info("切换 thinking 展示", { enabled: this.thinkingEnabled });
+  }
+
+  /**
+   * /搜索 <关键词>：在历史会话 jsonl 中搜索，返回匹配会话 + 片段
+   */
+  async _handleSearch(ctx, cmd) {
+    const keyword = (cmd.keyword || "").trim();
+    if (!keyword) {
+      return this.pusher.sendNotification("用法: /搜索 <关键词>");
+    }
+    const proj = this._ensureProject();
+    const sessions = listRecentSessions({
+      sessionDir: this.cfg.claude.sessionDir,
+      cwd: proj.cwd,
+      limit: 40,
+    });
+    const results = [];
+    for (const s of sessions) {
+      const filePath = path.join(
+        this.cfg.claude.sessionDir,
+        encodeCwd(proj.cwd),
+        s.sessionId + ".jsonl"
+      );
+      try {
+        const data = fs.readFileSync(filePath, "utf8");
+        for (const line of data.split("\n").reverse()) {
+          if (!line.includes(keyword)) continue;
+          try {
+            const d = JSON.parse(line);
+            const msg = d.message;
+            if (!msg) continue;
+            let text = "";
+            if (typeof msg.content === "string") text = msg.content;
+            else if (Array.isArray(msg.content)) {
+              text = msg.content
+                .filter((x) => x && x.type === "text" && x.text)
+                .map((x) => x.text)
+                .join("\n");
+            }
+            const idx = text.indexOf(keyword);
+            if (idx === -1) continue;
+            const start = Math.max(0, idx - 30);
+            const end = Math.min(text.length, idx + keyword.length + 50);
+            results.push({
+              session: formatSessionName(s),
+              snippet: text.slice(start, end).replace(/\s+/g, " "),
+            });
+            break; // 每会话一条
+          } catch {}
+        }
+      } catch {}
+      if (results.length >= 10) break;
+    }
+    if (!results.length) {
+      return this.pusher.sendNotification(`未找到含「${keyword}」的会话内容。`);
+    }
+    const lines = [`🔍 搜索「${keyword}」结果（${results.length} 条）：`, ""];
+    results.forEach((r, i) => {
+      lines.push(`${i + 1}. ${r.session}`);
+      lines.push(`   …${r.snippet}…`);
+      lines.push("");
+    });
+    await this.pusher.sendNotification(lines.join("\n"));
+  }
+
+  /** 成本记录文件（~/.claude/wecom-bridge/cost.json） */
+  _costFile() {
+    return path.join(path.dirname(this.cfg.registry.file), "cost.json");
+  }
+
+  /** 记录一次 claude 调用的 token/成本（result 的 usage 里提取） */
+  _recordCost(sessionId, resultObj) {
+    try {
+      if (!resultObj) return;
+      const usage = resultObj.usage || {};
+      const tokens =
+        (usage.input_tokens || 0) +
+        (usage.cache_creation_input_tokens || 0) +
+        (usage.cache_read_input_tokens || 0) +
+        (usage.output_tokens || 0);
+      const cost = resultObj.total_cost_usd || 0;
+      if (!tokens && !cost) return;
+      const file = this._costFile();
+      let data = [];
+      if (fs.existsSync(file)) {
+        try {
+          data = JSON.parse(fs.readFileSync(file, "utf8"));
+          if (!Array.isArray(data)) data = [];
+        } catch {
+          data = [];
+        }
+      }
+      data.push({
+        ts: Date.now(),
+        sessionId: (sessionId || "").slice(0, 8),
+        tokens,
+        cost,
+        input: usage.input_tokens || 0,
+        output: usage.output_tokens || 0,
+        cache: (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0),
+      });
+      // 只保留最近 5000 条
+      if (data.length > 5000) data = data.slice(-5000);
+      const dir = path.dirname(file);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(file, JSON.stringify(data), "utf8");
+    } catch {}
+  }
+
+  /**
+   * /成本：显示 token 用量与花费（今日/本月/累计）
+   */
+  async _handleCost(ctx) {
+    const file = this._costFile();
+    let data = [];
+    if (fs.existsSync(file)) {
+      try {
+        data = JSON.parse(fs.readFileSync(file, "utf8"));
+      } catch {}
+    }
+    if (!data.length) {
+      return this.pusher.sendNotification("📊 暂无成本数据。执行过 claude 任务后自动统计。");
+    }
+    const now = Date.now();
+    const dayStart = now - (now % (24 * 3600 * 1000));
+    const monthStart = new Date();
+    monthStart.setDate(1);
+    monthStart.setHours(0, 0, 0, 0);
+    const sum = (arr, k) => arr.reduce((n, x) => n + (x[k] || 0), 0);
+    const today = data.filter((x) => x.ts >= dayStart);
+    const month = data.filter((x) => x.ts >= monthStart.getTime());
+    const fmt = (n) => (n >= 1e9 ? (n / 1e9).toFixed(1) + "B" : n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? (n / 1e3).toFixed(1) + "k" : String(n));
+    const lines = [
+      "📊 **成本统计**",
+      "",
+      `今日: ${fmt(sum(today, "tokens"))} tokens，$${sum(today, "cost").toFixed(4)}`,
+      `本月: ${fmt(sum(month, "tokens"))} tokens，$${sum(month, "cost").toFixed(4)}`,
+      `累计: ${fmt(sum(data, "tokens"))} tokens，$${sum(data, "cost").toFixed(4)}`,
+      `调用次数: ${data.length}`,
+    ];
+    await this.pusher.sendNotification(lines.join("\n"));
+  }
+
+  /** 定时任务文件 */
+  _cronFile() {
+    return path.join(path.dirname(this.cfg.registry.file), "cron.json");
+  }
+
+  _loadCron() {
+    try {
+      const f = this._cronFile();
+      if (fs.existsSync(f)) {
+        const d = JSON.parse(fs.readFileSync(f, "utf8"));
+        if (Array.isArray(d)) this.cronJobs = d;
+      }
+    } catch {}
+  }
+
+  _saveCron() {
+    try {
+      const f = this._cronFile();
+      const dir = path.dirname(f);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(f, JSON.stringify(this.cronJobs), "utf8");
+    } catch {}
+  }
+
+  /** 启动定时调度器（index.js 调用），每 60 秒检查一次 */
+  startCronScheduler() {
+    this._loadCron();
+    setInterval(() => this._checkCron(), 60000);
+    if (this.cronJobs.length) {
+      this.log.info("已加载定时任务", { count: this.cronJobs.length });
+    }
+  }
+
+  _checkCron() {
+    const now = Date.now();
+    for (const job of this.cronJobs) {
+      if (now >= job.nextRun) {
+        job.nextRun = now + job.intervalMs;
+        this._saveCron();
+        const sessionId = crypto.randomUUID();
+        this.log.info("定时任务触发", { name: job.name });
+        this.enqueue({
+          taskName: "⏰" + (job.name || "定时"),
+          sessionId,
+          cwd: job.cwd || this.cfg.claude.workdir,
+          prompt: `（定时任务，请直接执行）${job.prompt}`,
+          isNew: true,
+        });
+      }
+    }
+  }
+
+  /**
+   * /定时 每<N>分钟 <任务>、/定时列表、/取消定时 <编号>
+   */
+  async _handleCron(ctx, cmd) {
+    if (cmd.action === "list") {
+      if (!this.cronJobs.length) {
+        return this.pusher.sendNotification("⏰ 暂无定时任务。用 /定时 每<N>分钟 <任务> 创建。");
+      }
+      const lines = [`⏰ 定时任务（${this.cronJobs.length} 个）：`, ""];
+      this.cronJobs.forEach((j, i) => {
+        const mins = Math.round(j.intervalMs / 60000);
+        const next = new Date(j.nextRun).toLocaleTimeString("zh-CN", { hour12: false });
+        lines.push(`${i + 1}. [${mins}分钟] ${j.name}`);
+        lines.push(`   下次: ${next} | 任务: ${j.prompt}`);
+      });
+      return this.pusher.sendNotification(lines.join("\n"));
+    }
+    if (cmd.action === "cancel") {
+      const idx = parseInt(cmd.id, 10);
+      if (isNaN(idx) || idx < 1 || idx > this.cronJobs.length) {
+        return this.pusher.sendNotification("⚠️ 编号无效。用 /定时列表 查看。");
+      }
+      const removed = this.cronJobs.splice(idx - 1, 1)[0];
+      this._saveCron();
+      return this.pusher.sendNotification(`✅ 已取消定时任务「${removed.name}」。`);
+    }
+    // create
+    const m =
+      /^每\s*(\d+)\s*(分钟|min|m)\s*(.*)$/i.exec(cmd.rest) ||
+      /^(\d+)\s*(分钟|min|m)\s*(.*)$/i.exec(cmd.rest);
+    if (!m || !m[3]) {
+      return this.pusher.sendNotification("用法: /定时 每<N>分钟 <任务描述>，如 /定时 每30分钟 检查服务器状态");
+    }
+    const intervalMs = parseInt(m[1], 10) * 60000;
+    const prompt = m[3].trim();
+    const proj = this._ensureProject();
+    const job = {
+      name: prompt.replace(/\s+/g, " ").slice(0, 12),
+      prompt,
+      intervalMs,
+      nextRun: Date.now() + intervalMs,
+      cwd: proj.cwd,
+      createdAt: Date.now(),
+    };
+    this.cronJobs.push(job);
+    this._saveCron();
+    return this.pusher.sendNotification(
+      `✅ 已创建定时任务：每 ${m[1]} 分钟执行「${prompt}」\n首次执行: ${new Date(job.nextRun).toLocaleTimeString("zh-CN", { hour12: false })}\n用 /定时列表 查看，/取消定时 <编号> 取消。`
+    );
+  }
+
+  /**
+   * /发送文件 <路径>：把本地文件通过 bot 上传并发送到微信
+   */
+  async _handleSendFile(ctx, cmd) {
+    const filePath = cmd.path;
+    if (!fs.existsSync(filePath)) {
+      return this.pusher.sendNotification(`⚠️ 文件不存在: ${filePath}`);
+    }
+    // 需要 bot 通道 + lastChatId
+    const bot = this.pusher && this.pusher.bot;
+    if (!bot || !bot.available || !bot.lastChatId) {
+      return this.pusher.sendNotification("⚠️ 文件发送需要智能机器人通道且用户已与机器人对话过。");
+    }
+    await this.pusher.sendNotification(`📤 正在发送文件 ${path.basename(filePath)}…`);
+    const ok = await bot.sendFile(bot.lastChatId, filePath);
+    if (!ok) {
+      await this.pusher.sendNotification("❌ 文件发送失败（详见日志）。");
+    }
   }
 
   /**

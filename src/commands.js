@@ -1,7 +1,7 @@
 // 命令解析器
 // 支持：/项目 <路径|名称>、/新开 <任务名>、/切换 <任务名|编号>、/会话列表、/继续、/帮助、/重置、/状态、/pin、/别名
 
-const CMD_RE = /^\/(项目|新开|切换|列表|会话列表|接管|继续|重置|帮助|help|状态|pin|别名|盯|不盯|watch|unwatch|模式|重启|停止|中止|stop|model|compact|历史|history|导出|export|effort|thinking)\s*(.*)$/;
+const CMD_RE = /^\/(项目|新开|切换|列表|会话列表|接管|继续|重置|帮助|help|状态|pin|别名|盯|不盯|watch|unwatch|模式|重启|停止|中止|stop|model|compact|历史|history|导出|export|effort|thinking|搜索|search|成本|cost|定时|定时列表|取消定时|发送文件)\s*(.*)$/;
 
 /**
  * 解析微信消息
@@ -136,6 +136,31 @@ function parseCommand(content) {
     case "thinking": {
       return { type: "thinking", on: rest.toLowerCase() };
     }
+    case "搜索":
+    case "search": {
+      if (!rest) return { type: "usage", hint: "用法: /搜索 <关键词>" };
+      return { type: "search", keyword: rest };
+    }
+    case "成本":
+    case "cost": {
+      return { type: "cost" };
+    }
+    case "定时": {
+      if (!rest) return { type: "usage", hint: "用法: /定时 每<N>分钟 <任务描述>" };
+      if (/^(列表|list)$/i.test(rest)) return { type: "cron", action: "list" };
+      return { type: "cron", action: "create", rest };
+    }
+    case "定时列表": {
+      return { type: "cron", action: "list" };
+    }
+    case "取消定时": {
+      if (!rest) return { type: "usage", hint: "用法: /取消定时 <编号>" };
+      return { type: "cron", action: "cancel", id: rest.trim() };
+    }
+    case "发送文件": {
+      if (!rest) return { type: "usage", hint: "用法: /发送文件 <文件路径>" };
+      return { type: "sendfile", path: rest.trim() };
+    }
     case "帮助":
     case "help":
     default:
@@ -162,6 +187,12 @@ const HELP_TEXT = `可用的命令：
 /compact            压缩当前会话上下文（生成摘要）
 /历史 [编号]       查看某会话最近对话（不接管）
 /导出 [编号]       导出会话为 markdown 文件
+/搜索 <关键词>     在历史会话中搜索内容
+/成本              查看 token 用量与花费统计
+/定时 每<N>分钟 <任务>  设置定时任务（如 /定时 每30分钟 检查服务器）
+/定时列表          查看定时任务
+/取消定时 <编号>   取消定时任务
+/发送文件 <路径>   把本地文件发送到微信（如 /发送文件 C:\a.txt）
 /pin <任务名|编号>   置顶/取消置顶会话（⭐）
 /别名 <任务名|编号> <新名>  给会话设置别名
 /重置                重置当前项目状态

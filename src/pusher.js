@@ -118,15 +118,18 @@ class Pusher {
    * @param {string} text
    * @param {string} [msgtype] 固定 markdown（主动推送仅支持 markdown）
    */
-  async sendNotification(text, msgtype = "markdown") {
-    if (this.bot && this.bot.available && this.bot.lastChatId) {
-      const payload =
-        msgtype === "markdown"
-          ? { msgtype: "markdown", markdown: { content: text } }
-          : { msgtype: "text", text: { content: text } };
-      const ok = this.bot.sendActive(this.bot.lastChatId, payload);
-      if (ok) return true;
-      this.log.warn("bot 主动推送失败，降级自建应用");
+  async sendNotification(text, msgtype = "markdown", chatId) {
+    if (this.bot && this.bot.available) {
+      const target = chatId || this.bot.lastChatId;
+      if (target) {
+        const payload =
+          msgtype === "markdown"
+            ? { msgtype: "markdown", markdown: { content: text } }
+            : { msgtype: "text", text: { content: text } };
+        const ok = this.bot.sendActive(target, payload);
+        if (ok) return true;
+        this.log.warn("bot 主动推送失败，降级自建应用");
+      }
     }
     await this.api.sendText(text);
     return true;

@@ -35,6 +35,9 @@ class BotClient {
     this.reconnectAttempt = 0;
     this.manualClose = false;
     this.pendingAck = 0; // 连续无 ack 次数
+    this.pendingReplies = new Map(); // req_id -> { resolve }（请求-响应等待）
+    this.userChats = new Map(); // userId -> chatId（多用户：各自对话目标）
+    this.currentUserId = ""; // 最近操作的用户（权限确认等推送回发起者）
   }
 
   get available() {
@@ -145,6 +148,14 @@ class BotClient {
     const cmd = frame.cmd;
     const body = frame.body || {};
     const reqId = (frame.headers && frame.headers.req_id) || "";
+
+    // 请求-响应匹配：req_id 在 pendingReplies 里 → resolve 该请求
+    if (reqId && this.pendingReplies.has(reqId)) {
+      const { resolve } = this.pendingReplies.get(reqId);
+      this.pendingReplies.delete(reqId);
+      resolve(frame);
+      return;
+    }
 
     // 订阅认证响应：无 cmd，凭 req_id 前缀 + errcode 识别
     if (reqId.startsWith("aibot_subscribe")) {
@@ -282,6 +293,20 @@ class BotClient {
     }
     content = mediaNote + content.trim();
 
+    // 群聊：仅 @ 机器人的消息才响应（去掉 @提及后处理）
+    const chattype = body.chattype || "single";
+    if (chattype === "group") {
+      const botName = this.cfg.botName || "Claude code";
+      const raw = content;
+      const mentioned = raw.includes("@") || raw.includes(botName);
+      if (!mentioned) {
+        this.log.info("群消息未 @ 机器人，忽略", { from: (body.from && body.from.userid) || "" });
+        return;
+      }
+      // 去掉 @提及（@名字/@机器人 等）
+      content = raw.replace(/@[^\s@，。]+/g, "").trim() || raw.replace(/@/g, "").trim();
+    }
+
     this.log.info("机器人收到消息", { from: (body.from && body.from.userid) || body.from_userid, content: content.slice(0, 100) });
 
     // 记录本次回调的 req_id，供流式回复复用（打字机原地刷新）
@@ -289,6 +314,11 @@ class BotClient {
     // 单聊 from 是对象 {userid}，群聊有 chatid；主动推送用 chatid（单聊=userid）
     const fromUserId = (body.from && body.from.userid) || "";
     this.lastChatId = body.chatid || fromUserId || "";
+    // 多用户：记录该用户的对话目标，并标记为当前操作用户
+    if (fromUserId) {
+      this.userChats.set(fromUserId, this.lastChatId);
+      this.currentUserId = fromUserId;
+    }
     this.log.info("记录 lastChatId", { chatId: this.lastChatId, chattype: body.chattype, fromUserId });
 
     // 组装成与自建应用回调一致的 msg 结构，走统一命令分发
@@ -380,6 +410,101 @@ class BotClient {
       headers: { req_id: "aibot_send_msg_" + crypto.randomUUID() },
       body: { chatid: chatId, ...payload },
     });
+  }
+
+  /**
+   * 发送请求帧并等待响应（按 req_id 匹配）
+   * @param {string} cmd 命令名
+   * @param {object} body 请求体
+   * @param {number} [timeoutMs] 超时
+   * @returns {Promise<object>} 响应帧
+   */
+  _sendReply(cmd, body, timeoutMs = 15000) {
+    return new Promise((resolve, reject) => {
+      const reqId = cmd + "_" + crypto.randomUUID();
+      const timer = setTimeout(() => {
+        this.pendingReplies.delete(reqId);
+        reject(new Error(cmd + " 响应超时"));
+      }, timeoutMs);
+      this.pendingReplies.set(reqId, {
+        resolve: (frame) => {
+          clearTimeout(timer);
+          resolve(frame);
+        },
+      });
+      const ok = this._send({ cmd, headers: { req_id: reqId }, body });
+      if (!ok) {
+        clearTimeout(timer);
+        this.pendingReplies.delete(reqId);
+        reject(new Error("发送失败（连接不可用）"));
+      }
+    });
+  }
+
+  /**
+   * 上传媒体（分片）并发送文件消息
+   * 流程：init → chunk(512KB 分片) → finish → aibot_send_msg(file)
+   * @param {string} chatId 单聊 userid / 群聊 chatid
+   * @param {string} filePath 本地文件路径
+   * @returns {Promise<boolean>}
+   */
+  async sendFile(chatId, filePath) {
+    try {
+      const buf = fs.readFileSync(filePath);
+      const md5 = crypto.createHash("md5").update(buf).digest("hex");
+      const CHUNK = 512 * 1024;
+      const totalChunks = Math.ceil(buf.length / CHUNK);
+      if (totalChunks > 100) {
+        this.log.error("文件过大（超过 100 分片 ≈ 50MB）", { filePath });
+        return false;
+      }
+      // 1. init
+      const initRes = await this._sendReply("aibot_upload_media_init", {
+        type: "file",
+        filename: path.basename(filePath),
+        total_size: buf.length,
+        total_chunks: totalChunks,
+        md5,
+      });
+      const uploadId = initRes.body && initRes.body.upload_id;
+      if (!uploadId) {
+        this.log.error("上传初始化失败", { errmsg: initRes.errmsg });
+        return false;
+      }
+      // 2. 分片上传
+      for (let i = 0; i < totalChunks; i++) {
+        const chunk = buf.slice(i * CHUNK, Math.min((i + 1) * CHUNK, buf.length));
+        await this._sendReply("aibot_upload_media_chunk", {
+          upload_id: uploadId,
+          chunk_index: i,
+          base64_data: chunk.toString("base64"),
+        });
+      }
+      // 3. finish
+      const finRes = await this._sendReply("aibot_upload_media_finish", {
+        upload_id: uploadId,
+      });
+      const mediaId = finRes.body && finRes.body.media_id;
+      if (!mediaId) {
+        this.log.error("上传完成失败", { errmsg: finRes.errmsg });
+        return false;
+      }
+      // 4. 发送文件消息
+      const ok = this._send({
+        cmd: "aibot_send_msg",
+        headers: { req_id: "aibot_send_msg_" + crypto.randomUUID() },
+        body: {
+          chatid: chatId,
+          msgtype: "file",
+          file: { media_id: mediaId },
+        },
+      });
+      this.log.info("文件已发送", { filePath, size: buf.length, mediaId: mediaId.slice(0, 8) });
+      return ok;
+    } catch (e) {
+      this.log.error("发送文件失败", { filePath, err: e.message });
+      return false;
+    }
   }
 
   /**

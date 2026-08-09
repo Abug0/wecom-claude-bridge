@@ -56,7 +56,13 @@ class Approver {
         await this.pusher.endTask(null, null, true);
       }
       // 权限确认走统一主动推送（bot 可用走 bot，否则自建应用）
-      await this.pusher.sendNotification(lines.join("\n"));
+      // 多用户：推给当前操作用户的对话目标
+      const bot = this.pusher && this.pusher.bot;
+      const chatId =
+        bot && bot.userChats && bot.currentUserId
+          ? bot.userChats.get(bot.currentUserId)
+          : undefined;
+      await this.pusher.sendNotification(lines.join("\n"), "markdown", chatId);
     } catch (e) {
       this.log.error("权限确认推送失败", { err: e.message });
       this.pending.delete(id);

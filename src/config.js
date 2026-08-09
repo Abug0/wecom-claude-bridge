@@ -28,6 +28,7 @@ function loadConfig() {
       botId: process.env.WECOM_BOT_ID || "",
       botSecret: process.env.WECOM_BOT_SECRET || "",
       wsUrl: process.env.WECOM_BOT_WS || "wss://openws.work.weixin.qq.com",
+      botName: process.env.WECOM_BOT_NAME || "Claude code", // 群聊 @ 触发时匹配的机器人名
       // 流式分片间隔（毫秒）与超时兜底
       streamIntervalMs: Number(process.env.WECOM_BOT_STREAM_INTERVAL_MS || 800),
       streamIdleTimeoutMs: Number(process.env.WECOM_BOT_STREAM_IDLE_TIMEOUT_MS || 60000),

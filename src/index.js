@@ -61,6 +61,8 @@ function main() {
   const pusher = new Pusher(cfg, api, log);
   const approver = new Approver(cfg, api, pusher, log);
   const runner = new ClaudeRunner(cfg, log, registry, pusher);
+  // 定时任务调度器（每分钟检查）
+  runner.startCronScheduler();
 
   // 智能机器人通道（默认对话流式；未配置则纯自建应用模式）
   let bot = null;
