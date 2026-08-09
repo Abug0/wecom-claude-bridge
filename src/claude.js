@@ -750,6 +750,9 @@ class ClaudeRunner {
       streamStarted = this.pusher.beginTask(job.taskName, job.reqId);
     }
 
+    // 打开 .live 增量文件（VSCode 实时视图用）：任务开始清空
+    this._liveOpen(job.sessionId);
+
     // 开始处理提示：有流式则作为流式首片，否则走自建应用
     const remain = (this.queues.get(job.sessionId) || []).length;
     const startHint = `⏳ 开始处理，队列剩余 ${remain} 条…`;
@@ -784,7 +787,10 @@ class ClaudeRunner {
       const onPartial = ({ kind, text }) => {
         if (kind === "reply") {
           replyBuf += text;
+          this._liveAppend(job.sessionId, { kind: "reply", text });
         } else if (kind === "thinking") {
+          // 实时增量始终写入 .live（VSCode 视图用），微信推送按 thinkingEnabled 控制
+          this._liveAppend(job.sessionId, { kind: "thinking", text });
           if (this.thinkingEnabled) {
             // 展示思考内容：累积 + 节流推送（避免刷屏）
             thinkingBuf += text;
@@ -798,6 +804,7 @@ class ClaudeRunner {
           }
         } else if (kind === "tool") {
           // 每个工具调用推一条（可能有多个工具）
+          this._liveAppend(job.sessionId, { kind: "tool", text });
           this.pusher.pushStyled(job.taskName, text, "tool").catch(() => {});
         }
       };
@@ -848,6 +855,8 @@ class ClaudeRunner {
         await this.pusher.endTask(job.taskName);
       }
       this.registry.touchTask(encodeCwd(job.cwd), job.taskName);
+      // .live 结束标记（VSCode 实时视图）
+      this._liveAppend(job.sessionId, { kind: "end" });
       // 任务完成后自动触发 VSCode 深链打开该会话（jsonl 已落盘，VSCode 从磁盘加载最新内容）
       if (this.cfg.claude && this.cfg.claude.vscodeAutoOpen && job.sessionId) {
         this._openInVscode(job.sessionId);
@@ -867,6 +876,28 @@ class ClaudeRunner {
     } catch (e) {
       this.log.error("VSCode 深链触发失败", { err: e.message });
     }
+  }
+
+  /** .live 增量文件目录（VSCode 实时视图读这里，逐字级） */
+  _liveDir() {
+    return path.join(path.dirname(this.cfg.registry.file), "live");
+  }
+
+  /** 任务开始：清空该会话的 .live 文件 */
+  _liveOpen(sessionId) {
+    try {
+      const dir = this._liveDir();
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, sessionId + ".live"), "", "utf8");
+    } catch {}
+  }
+
+  /** 追加一条流式增量到 .live 文件（每行 JSON） */
+  _liveAppend(sessionId, obj) {
+    try {
+      const f = path.join(this._liveDir(), sessionId + ".live");
+      fs.appendFileSync(f, JSON.stringify(obj) + "\n", "utf8");
+    } catch {}
   }
 
   /**

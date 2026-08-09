@@ -8,9 +8,15 @@ const SESSION_ROOT = path.join(
   ".claude",
   "projects"
 );
-const POLL_MS = 1000; // 轮询间隔
+const LIVE_ROOT = path.join(
+  process.env.USERPROFILE || process.env.HOME || "",
+  ".claude",
+  "wecom-bridge",
+  "live"
+);
+const POLL_MS = 500; // 轮询间隔（流式更密集）
 
-/** @type {Map<string, {filePath:string, offset:number, size:number}>} */
+/** @type {Map<string, {filePath:string, offset:number, size:number, livePath:string, liveOffset:number}>} */
 const trackers = new Map(); // sessionId -> 偏移跟踪
 
 function activate(context) {
@@ -127,6 +133,8 @@ class LiveViewProvider {
           filePath: this._filePath(s.project, s.sessionId),
           offset: 0,
           size: 0,
+          livePath: path.join(LIVE_ROOT, s.sessionId + ".live"),
+          liveOffset: 0,
         });
       }
     }
@@ -137,38 +145,85 @@ class LiveViewProvider {
     return path.join(SESSION_ROOT, project, sessionId + ".jsonl");
   }
 
-  /** 发送某会话完整历史（切换会话时） */
+  /** 发送某会话完整历史（切换会话时），并带上 .live 剩余内容 */
   _sendHistory(sessionId) {
     if (!this._view) return;
     const t = trackers.get(sessionId);
-    if (!t || !fs.existsSync(t.filePath)) {
-      this._view.webview.postMessage({ type: "messages", sessionId, messages: [] });
-      return;
+    if (!t) return;
+    let messages = [];
+    if (fs.existsSync(t.filePath)) {
+      const size = fs.statSync(t.filePath).size;
+      t.offset = size;
+      messages = this._parseRange(t.filePath, 0, size);
     }
-    const size = fs.statSync(t.filePath).size;
-    t.offset = size; // 历史已读，后续只推增量
-    const messages = this._parseRange(t.filePath, 0, size);
+    // .live 剩余（未结束的流式内容）
+    if (fs.existsSync(t.livePath)) {
+      const size = fs.statSync(t.livePath).size;
+      t.liveOffset = size;
+      const liveItems = this._parseLiveRange(t.livePath, 0, size);
+      messages = messages.concat(liveItems);
+    }
     this._view.webview.postMessage({ type: "messages", sessionId, messages });
   }
 
-  /** 轮询所有会话的增量 */
+  /** 轮询所有会话：jsonl 增量 + .live 流式增量 */
   _poll() {
     if (!this._view) return;
     for (const [sessionId, t] of trackers) {
-      if (!fs.existsSync(t.filePath)) continue;
-      let size;
-      try {
-        size = fs.statSync(t.filePath).size;
-      } catch {
-        continue;
+      // jsonl 块级增量
+      if (fs.existsSync(t.filePath)) {
+        let size;
+        try {
+          size = fs.statSync(t.filePath).size;
+        } catch {
+          size = 0;
+        }
+        if (size > t.offset) {
+          const messages = this._parseRange(t.filePath, t.offset, size);
+          t.offset = size;
+          if (messages.length) {
+            this._view.webview.postMessage({ type: "messages", sessionId, messages });
+          }
+        }
       }
-      if (size <= t.offset) continue;
-      const messages = this._parseRange(t.filePath, t.offset, size);
-      t.offset = size;
-      if (messages.length) {
-        this._view.webview.postMessage({ type: "messages", sessionId, messages });
+      // .live 流式增量（逐字级）
+      if (fs.existsSync(t.livePath)) {
+        let size;
+        try {
+          size = fs.statSync(t.livePath).size;
+        } catch {
+          size = 0;
+        }
+        if (size > t.liveOffset) {
+          const items = this._parseLiveRange(t.livePath, t.liveOffset, size);
+          t.liveOffset = size;
+          if (items.length) {
+            this._view.webview.postMessage({ type: "live", sessionId, items });
+          }
+        }
       }
     }
+  }
+
+  /** 解析 .live 增量文件的 [start, end) 区间（每行 JSON {kind,text}） */
+  _parseLiveRange(filePath, start, end) {
+    const items = [];
+    try {
+      const fd = fs.openSync(filePath, "r");
+      const buf = Buffer.alloc(end - start);
+      fs.readSync(fd, buf, 0, end - start, start);
+      fs.closeSync(fd);
+      for (const line of buf.toString("utf8").split("\n")) {
+        const l = line.trim();
+        if (!l) continue;
+        try {
+          const d = JSON.parse(l);
+          if (d.kind && d.text !== undefined) items.push(d);
+          else if (d.kind === "end") items.push({ kind: "end" });
+        } catch {}
+      }
+    } catch {}
+    return items;
   }
 
   /** 解析 jsonl 的 [start, end) 字节区间，提取消息 */
@@ -256,6 +311,11 @@ class LiveViewProvider {
   .label { font-weight: 600; margin-bottom: 4px; }
   .tool-label { color: #d19a66; font-weight: 600; }
   .empty { color: var(--vscode-descriptionForeground); text-align: center; margin-top: 40px; }
+  .live { margin: 1px 0; white-space: pre-wrap; word-break: break-word; }
+  .live.reply { color: var(--vscode-foreground); }
+  .live.thinking { color: var(--vscode-descriptionForeground); font-style: italic; font-size: 12px; }
+  .live.tool { color: var(--vscode-charts-orange, #d19a66); font-size: 12px; }
+  .end-line { border-top: 1px dashed var(--vscode-panel-border); margin: 6px 0; color: var(--vscode-descriptionForeground); font-size: 11px; }
   #list { overflow-y: auto; }
 </style>
 </head>
@@ -270,6 +330,7 @@ class LiveViewProvider {
   const sel = document.getElementById('sessionSel');
   const list = document.getElementById('list');
   let current = null;
+  let liveItems = [];
 
   function esc(s) {
     return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -300,7 +361,35 @@ class LiveViewProvider {
 
   function loadSession(sessionId) {
     current = sessionId;
+    liveItems = [];
     vscode.postMessage({ type: 'selectSession', sessionId });
+  }
+
+  function renderLive(items) {
+    for (const it of items) {
+      if (it.kind === 'end') {
+        const d = document.createElement('div');
+        d.className = 'end-line';
+        d.textContent = '── 本轮结束 ──';
+        list.appendChild(d);
+        continue;
+      }
+      const el = document.createElement('div');
+      if (it.kind === 'reply') {
+        el.className = 'live reply';
+        el.textContent = it.text;
+      } else if (it.kind === 'thinking') {
+        el.className = 'live thinking';
+        el.textContent = '🤔 ' + it.text;
+      } else if (it.kind === 'tool') {
+        el.className = 'live tool';
+        el.textContent = '🔧 ' + it.text;
+      } else {
+        continue;
+      }
+      list.appendChild(el);
+    }
+    list.scrollTop = list.scrollHeight;
   }
 
   sel.addEventListener('change', () => {
@@ -327,6 +416,11 @@ class LiveViewProvider {
       }
     } else if (msg.type === 'messages') {
       if (current === msg.sessionId) render(msg.messages);
+    } else if (msg.type === 'live') {
+      if (current === msg.sessionId) {
+        liveItems.push(...msg.items);
+        renderLive(msg.items);
+      }
     }
   });
 
