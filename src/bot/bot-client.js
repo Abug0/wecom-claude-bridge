@@ -256,8 +256,9 @@ class BotClient {
       mediaNote = "[语音转文字] ";
     } else if (msgtype === "image") {
       const url = body.image && body.image.url;
+      const aeskey = body.image && body.image.aeskey;
       if (url) {
-        const saved = await this._downloadMedia(url, "image");
+        const saved = await this._downloadMedia(url, "image", aeskey);
         if (saved) {
           content = `用户发了一张图片，已保存到: ${saved}。请读取该图片文件并回应用户。`;
         } else {
@@ -270,8 +271,9 @@ class BotClient {
       }
     } else if (msgtype === "file") {
       const url = body.file && body.file.url;
+      const aeskey = body.file && body.file.aeskey;
       if (url) {
-        const saved = await this._downloadMedia(url, "file");
+        const saved = await this._downloadMedia(url, "file", aeskey);
         if (saved) {
           content = `用户发送了一个文件，已保存到: ${saved}。请读取该文件内容并回应用户。`;
         } else {
@@ -344,11 +346,13 @@ class BotClient {
 
   /**
    * 下载图片/文件媒体到本地（~/.claude/wecom-bridge/media/）
+   * 加密模式下带 aeskey → AES-256-CBC 解密（key=base64(aeskey)，IV=key前16字节，PKCS#7 32字节块）
    * @param {string} url 媒体地址
    * @param {string} kind image | file
+   * @param {string} [aeskey] 可选加密密钥
    * @returns {Promise<string|null>} 保存路径或 null
    */
-  _downloadMedia(url, kind) {
+  _downloadMedia(url, kind, aeskey) {
     return new Promise((resolve) => {
       let mediaDir;
       try {
@@ -369,7 +373,7 @@ class BotClient {
         // 跟随重定向
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           res.resume();
-          this._downloadMedia(res.headers.location, kind).then(resolve);
+          this._downloadMedia(res.headers.location, kind, aeskey).then(resolve);
           return;
         }
         if (res.statusCode !== 200) {
@@ -377,15 +381,23 @@ class BotClient {
           this.log.warn("媒体下载非 200", { url, code: res.statusCode });
           return resolve(null);
         }
-        const out = fs.createWriteStream(file);
-        res.pipe(out);
-        out.on("finish", () => {
-          out.close();
-          this.log.info("媒体下载完成", { kind, file });
-          resolve(file);
+        // 收集完整 Buffer（可能需解密）
+        const chunks = [];
+        res.on("data", (d) => chunks.push(d));
+        res.on("end", () => {
+          try {
+            let data = Buffer.concat(chunks);
+            if (aeskey) data = this._decryptMedia(data, aeskey);
+            fs.writeFileSync(file, data);
+            this.log.info("媒体保存完成", { kind, file, encrypted: !!aeskey });
+            resolve(file);
+          } catch (e) {
+            this.log.error("媒体解密/写入失败", { err: e.message });
+            resolve(null);
+          }
         });
-        out.on("error", (e) => {
-          this.log.error("媒体写入失败", { err: e.message });
+        res.on("error", (e) => {
+          this.log.error("媒体下载错误", { err: e.message });
           resolve(null);
         });
       });
@@ -398,6 +410,30 @@ class BotClient {
         resolve(null);
       });
     });
+  }
+
+  /**
+   * AES-256-CBC 解密媒体内容（企业微信智能机器人加密模式）
+   * key = base64(aeskey)；IV = key 前 16 字节；PKCS#7 padding 按 32 字节块
+   */
+  _decryptMedia(buffer, aeskey) {
+    const crypto = require("crypto");
+    const key = Buffer.from(aeskey, "base64");
+    const iv = key.subarray(0, 16);
+    const decipher = crypto.createDecipheriv("aes-256-cbc", key, iv);
+    decipher.setAutoPadding(false); // 手动去 PKCS#7（32 字节块，非标准 16）
+    let decrypted = Buffer.concat([decipher.update(buffer), decipher.final()]);
+    const padLen = decrypted[decrypted.length - 1];
+    if (padLen < 1 || padLen > 32 || padLen > decrypted.length) {
+      throw new Error(`Invalid PKCS#7 padding: ${padLen}`);
+    }
+    for (let i = decrypted.length - padLen; i < decrypted.length; i++) {
+      if (decrypted[i] !== padLen) {
+        throw new Error("Invalid PKCS#7 padding bytes");
+      }
+    }
+    decrypted = decrypted.subarray(0, decrypted.length - padLen);
+    return decrypted;
   }
 
   /**

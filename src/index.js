@@ -13,17 +13,18 @@ const { buildServer } = require("./server");
 const { startTunnel } = require("./tunnel/keepalive");
 
 /**
- * 启动维护：清理 7 天前的媒体下载（图片/文件）。
+ * 启动维护：清理 7 天前的媒体下载与 .live 实时流文件。
  * 注意：真实日志已在 data/ 按天滚动（logger），Claude Code 的 jsonl 由其自身 cleanupPeriodDays 管理，此处不碰。
  */
 function startupMaintenance(logger) {
+  const base = path.join(
+    process.env.USERPROFILE || process.env.HOME || "",
+    ".claude",
+    "wecom-bridge"
+  );
+  // 清理 media/（下载的图片/文件）
   try {
-    const mediaDir = path.join(
-      process.env.USERPROFILE || process.env.HOME || "",
-      ".claude",
-      "wecom-bridge",
-      "media"
-    );
+    const mediaDir = path.join(base, "media");
     if (fs.existsSync(mediaDir)) {
       const cutoff = Date.now() - 7 * 24 * 3600 * 1000;
       let cleaned = 0;
@@ -39,7 +40,27 @@ function startupMaintenance(logger) {
       if (cleaned) logger.info("媒体清理", { cleaned });
     }
   } catch (e) {
-    logger.error("启动维护失败", { err: e.message });
+    logger.error("媒体清理失败", { err: e.message });
+  }
+  // 清理 live/（VSCode 实时视图的流式增量文件）
+  try {
+    const liveDir = path.join(base, "live");
+    if (fs.existsSync(liveDir)) {
+      const cutoff = Date.now() - 7 * 24 * 3600 * 1000;
+      let cleaned = 0;
+      for (const f of fs.readdirSync(liveDir)) {
+        const p = path.join(liveDir, f);
+        try {
+          if (fs.statSync(p).mtimeMs < cutoff) {
+            fs.unlinkSync(p);
+            cleaned++;
+          }
+        } catch {}
+      }
+      if (cleaned) logger.info("live 流文件清理", { cleaned });
+    }
+  } catch (e) {
+    logger.error("live 清理失败", { err: e.message });
   }
 }
 
