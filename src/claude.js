@@ -980,6 +980,16 @@ class ClaudeRunner {
     if (job.isNew) {
       return [...base, "--session-id", job.sessionId, "--name", job.taskName, job.prompt];
     }
+    // 会话文件不存在（如 /新开 只注册未创建）→ 自动转为创建新会话
+    const sessFile = path.join(
+      this.cfg.claude.sessionDir,
+      encodeCwd(job.cwd || this.cfg.claude.workdir),
+      job.sessionId + ".jsonl"
+    );
+    if (!fs.existsSync(sessFile)) {
+      this.log.info("会话文件不存在，自动创建新会话", { sessionId: job.sessionId.slice(0, 8) });
+      return [...base, "--session-id", job.sessionId, "--name", job.taskName, job.prompt];
+    }
     const args = [...base, "--resume", job.sessionId];
     // 接力：微信第一次接手 VSCode 会话时注入"继续而非重来"的语义引导
     if (job.relay) {
@@ -1066,8 +1076,14 @@ class ClaudeRunner {
               }
             }
           } else if (r.type === "result") {
-            finalResult = r.is_error ? "❌ " + (r.result || "") : r.result;
-            if (r.is_error) err = (err || "") + (r.result || "");
+            if (r.is_error) {
+              // 错误详情在 errors 数组（result 常为空）
+              const errMsg = (r.errors && r.errors[0]) || r.result || "未知错误";
+              finalResult = "❌ " + errMsg;
+              err = (err || "") + errMsg;
+            } else {
+              finalResult = r.result;
+            }
           }
         } catch {}
       };
