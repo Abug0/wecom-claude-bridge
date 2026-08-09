@@ -9,12 +9,39 @@ const CMD_RE = /^\/(项目|新开|切换|列表|会话列表|接管|继续|重�
  * @returns {{type: string, ...}}
  *   type: prompt | project | new | switch | list | continue | reset | usage
  */
+/**
+ * 自然语言命令别名（语音转文字或文本不带 / 时，精确匹配触发命令）
+ * 只做整句精确匹配，避免误判普通消息为命令。
+ */
+const NATURAL_CMD = {
+  "新开会话": { type: "new", taskName: null, prompt: null },
+  "新开一个会话": { type: "new", taskName: null, prompt: null },
+  "会话列表": { type: "list", page: "1" },
+  "列出会话": { type: "list", page: "1" },
+  "继续": { type: "continue", prompt: null },
+  "重置": { type: "reset" },
+  "停止": { type: "stop" },
+  "中止": { type: "stop" },
+  "状态": { type: "status" },
+  "查看状态": { type: "status" },
+  "重启": { type: "restart" },
+  "帮助": { type: "usage" },
+  "帮助命令": { type: "usage" },
+  "盯": { type: "watch", selector: null },
+  "不盯": { type: "unwatch" },
+  "停止监控": { type: "unwatch" },
+};
+
 function parseCommand(content) {
   const text = (content || "").trim();
   if (!text) return { type: "usage" };
 
   const m = CMD_RE.exec(text);
-  if (!m) return { type: "prompt", prompt: text };
+  if (!m) {
+    // 无 / 前缀：尝试自然语言命令别名（精确匹配）
+    if (NATURAL_CMD[text]) return NATURAL_CMD[text];
+    return { type: "prompt", prompt: text };
+  }
 
   const cmd = m[1];
   const rest = m[2].trim();
