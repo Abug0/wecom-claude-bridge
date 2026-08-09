@@ -5,6 +5,9 @@
 //   - aibot_respond_msg + msgtype:"stream" 流式回复（打字机效果）
 //   - 心跳 ping 保活；断线指数退避重连；单实例（多进程互踢）
 const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
+const https = require("https");
 
 // 优先使用 ws 库（直连，绕过 Node 原生 WebSocket 对系统代理的自动使用）
 let WSImpl = null;
@@ -231,15 +234,53 @@ class BotClient {
    */
   async _handleUserMessage(body, reqId) {
     const msgtype = body.msgtype;
-    if (msgtype !== "text") {
-      this.log.info("忽略非文本机器人消息", { msgtype });
+    let content = "";
+    let mediaNote = "";
+
+    if (msgtype === "text") {
+      content = body.text && body.text.content ? body.text.content : "";
+    } else if (msgtype === "voice") {
+      // 语音消息：content 已是转好的文字
+      content = (body.voice && body.voice.content) || "";
+      mediaNote = "[语音转文字] ";
+    } else if (msgtype === "image") {
+      const url = body.image && body.image.url;
+      if (url) {
+        const saved = await this._downloadMedia(url, "image");
+        if (saved) {
+          content = `用户发了一张图片，已保存到: ${saved}。请读取该图片文件并回应用户。`;
+        } else {
+          content = "（图片下载失败，请让用户重新发送）";
+        }
+        mediaNote = "[图片消息] ";
+      } else {
+        content = "（收到图片消息但无下载地址）";
+        mediaNote = "[图片消息] ";
+      }
+    } else if (msgtype === "file") {
+      const url = body.file && body.file.url;
+      if (url) {
+        const saved = await this._downloadMedia(url, "file");
+        if (saved) {
+          content = `用户发送了一个文件，已保存到: ${saved}。请读取该文件内容并回应用户。`;
+        } else {
+          content = "（文件下载失败，请让用户重新发送）";
+        }
+        mediaNote = "[文件消息] ";
+      } else {
+        content = "（收到文件消息但无下载地址）";
+        mediaNote = "[文件消息] ";
+      }
+    } else {
+      this.log.info("忽略未知机器人消息类型", { msgtype });
       return;
     }
-    const content = body.text && body.text.content ? body.text.content : "";
+
     if (!content.trim()) {
-      this.log.warn("机器人收到空消息");
+      this.log.warn("机器人收到空消息", { msgtype });
       return;
     }
+    content = mediaNote + content.trim();
 
     this.log.info("机器人收到消息", { from: (body.from && body.from.userid) || body.from_userid, content: content.slice(0, 100) });
 
@@ -268,6 +309,64 @@ class BotClient {
     } catch (e) {
       this.log.error("机器人消息处理失败", { err: e.message });
     }
+  }
+
+  /**
+   * 下载图片/文件媒体到本地（~/.claude/wecom-bridge/media/）
+   * @param {string} url 媒体地址
+   * @param {string} kind image | file
+   * @returns {Promise<string|null>} 保存路径或 null
+   */
+  _downloadMedia(url, kind) {
+    return new Promise((resolve) => {
+      let mediaDir;
+      try {
+        mediaDir = path.join(
+          process.env.USERPROFILE || process.env.HOME || "",
+          ".claude",
+          "wecom-bridge",
+          "media"
+        );
+        if (!fs.existsSync(mediaDir)) fs.mkdirSync(mediaDir, { recursive: true });
+      } catch (e) {
+        this.log.error("媒体目录创建失败", { err: e.message });
+        return resolve(null);
+      }
+      const ext = kind === "image" ? ".img" : ".bin";
+      const file = path.join(mediaDir, `${kind}_${Date.now()}${ext}`);
+      const req = https.get(url, (res) => {
+        // 跟随重定向
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          res.resume();
+          this._downloadMedia(res.headers.location, kind).then(resolve);
+          return;
+        }
+        if (res.statusCode !== 200) {
+          res.resume();
+          this.log.warn("媒体下载非 200", { url, code: res.statusCode });
+          return resolve(null);
+        }
+        const out = fs.createWriteStream(file);
+        res.pipe(out);
+        out.on("finish", () => {
+          out.close();
+          this.log.info("媒体下载完成", { kind, file });
+          resolve(file);
+        });
+        out.on("error", (e) => {
+          this.log.error("媒体写入失败", { err: e.message });
+          resolve(null);
+        });
+      });
+      req.on("error", (e) => {
+        this.log.error("媒体下载失败", { err: e.message });
+        resolve(null);
+      });
+      req.setTimeout(20000, () => {
+        req.destroy();
+        resolve(null);
+      });
+    });
   }
 
   /**
