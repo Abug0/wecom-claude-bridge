@@ -3,7 +3,7 @@ const { spawn, execFileSync } = require("child_process");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
-const { parseCommand, HELP_TEXT } = require("./commands");
+const { parseCommand, matchNaturalCommand, HELP_TEXT } = require("./commands");
 const { detectActiveSession, listRecentSessions, readSessionHistory, formatSessionName } = require("./detector");
 const { encodeCwd } = require("./projects");
 
@@ -26,6 +26,7 @@ class ClaudeRunner {
     this.model = null; // 当前模型覆盖（/model 可切换，null=用默认）
     this.effort = null; // 当前推理努力程度（/effort，null=用默认）
     this.thinkingEnabled = false; // /thinking 思考内容展示开关（默认只显示"思考中…"）
+    this.pendingConfirm = null; // 自然语言命令待确认 { cmd, content }
   }
 
   /**
@@ -34,7 +35,38 @@ class ClaudeRunner {
    */
   async handleIncoming(ctx) {
     const content = ctx.msg.Content;
+    const trimmed = (content || "").trim();
+
+    // 有待确认命令 → 检查是否确认回复
+    if (this.pendingConfirm) {
+      if (/^(是|确定|确认|对|执行|可以|好的|yes|ok|同意|确认执行)$/i.test(trimmed)) {
+        const pending = this.pendingConfirm;
+        this.pendingConfirm = null;
+        this.log.info("自然语言命令已确认", { cmd: pending.cmd.type });
+        return this._execNaturalCommand(pending.cmd, ctx);
+      }
+      // 非确认回复 → 放弃待确认命令，按普通消息继续
+      this.pendingConfirm = null;
+    }
+
     const cmd = parseCommand(content);
+    if (cmd.type === "prompt") {
+      // 无 / 前缀：尝试自然语言命令匹配
+      const nat = matchNaturalCommand(trimmed);
+      if (nat) {
+        if (nat.destructive) {
+          // 破坏性命令 → 待确认
+          this.pendingConfirm = { cmd: nat, content: trimmed };
+          this.log.info("自然语言命令待确认", { type: nat.type, keyword: nat.keyword });
+          return this.pusher.sendNotification(
+            `⚠️ 检测到你想执行「${nat.keyword}」相关操作。回复「确定」执行，或直接说你的需求（将作为普通消息）。`
+          );
+        }
+        // 安全命令 → 直接执行
+        return this._execNaturalCommand(nat, ctx);
+      }
+      return this._handlePrompt(ctx, cmd);
+    }
 
     switch (cmd.type) {
       case "project": {
@@ -130,6 +162,39 @@ class ClaudeRunner {
         await this.pusher.pushSectioned("命令", cmd.hint || HELP_TEXT);
         break;
       }
+    }
+  }
+
+  /**
+   * 执行自然语言命令（确认后或安全命令直接执行）
+   * @param {{type: string}} nat matchNaturalCommand 的结果
+   */
+  async _execNaturalCommand(nat, ctx) {
+    switch (nat.type) {
+      case "new":
+        return this._handleNew(ctx, { taskName: null, prompt: null });
+      case "switch":
+        return this._handleSwitch(ctx, { selector: null });
+      case "takeover":
+        return this._handleTakeover(ctx, { selector: null });
+      case "reset":
+        return this._handleReset(ctx);
+      case "restart":
+        return this._handleRestart(ctx);
+      case "list":
+        return this._handleList(ctx, { page: "1" });
+      case "status":
+        return this._handleStatus(ctx);
+      case "continue":
+        return this._handleContinue(ctx, { prompt: null });
+      case "stop":
+        return this._handleStop(ctx);
+      case "export":
+        return this._handleExport(ctx, { selector: null });
+      case "history":
+        return this._handleHistory(ctx, { selector: null });
+      default:
+        return this.pusher.sendNotification("⚠️ 无法识别该命令。");
     }
   }
 

@@ -9,6 +9,39 @@ const CMD_RE = /^\/(项目|新开|切换|列表|会话列表|接管|继续|重�
  * @returns {{type: string, ...}}
  *   type: prompt | project | new | switch | list | continue | reset | usage
  */
+/**
+ * 自然语言命令关键词匹配（语音/文本不带 / 时）
+ * 返回 { type, hint } 或 null（未匹配则当普通消息）
+ * 注意：匹配到后是否执行由桥接的确认流程决定（破坏性命令需用户二次确认）
+ */
+const NATURAL_KEYWORDS = [
+  // [关键词, 命令类型, 是否破坏性]
+  ["新开", "new", true],
+  ["新建", "new", true],
+  ["新会话", "new", true],
+  ["切换", "switch", true],
+  ["接管", "takeover", true],
+  ["重置", "reset", true],
+  ["重启", "restart", true],
+  ["会话列表", "list", false],
+  ["列出会话", "list", false],
+  ["状态", "status", false],
+  ["继续", "continue", false],
+  ["停止", "stop", false],
+  ["中止", "stop", false],
+  ["导出", "export", false],
+  ["历史", "history", false],
+];
+
+function matchNaturalCommand(text) {
+  for (const [kw, type, destructive] of NATURAL_KEYWORDS) {
+    if (text.includes(kw)) {
+      return { type, keyword: kw, destructive };
+    }
+  }
+  return null;
+}
+
 function parseCommand(content) {
   const text = (content || "").trim();
   if (!text) return { type: "usage" };
@@ -134,4 +167,4 @@ const HELP_TEXT = `可用的命令：
 /重置                重置当前项目状态
 其他消息直接作为提示词发给 Claude`;
 
-module.exports = { parseCommand, HELP_TEXT };
+module.exports = { parseCommand, matchNaturalCommand, HELP_TEXT };
