@@ -852,19 +852,42 @@ class ClaudeRunner {
   }
 
   /**
-   * 末尾去重兜底：检测文本末尾是否有完整重复段（模型偶发重复），截断保留一份
-   * @param {string} text
-   * @returns {string}
+   * 回复去重兜底：检测文本中"相邻重复的段"（模型/上下文偶发把内容复述多次），保留一份。
+   * 先做整段相邻去重，再兜底末尾小段重复。
    */
   _dedupTail(text) {
-    if (!text || text.length < 10) return text;
-    // 从后往前找重复：取末尾一段，看它是否在更早位置也出现
-    const maxLen = Math.floor(text.length / 2);
-    for (let len = Math.min(maxLen, 200); len >= 20; len--) {
+    if (!text || text.length < 20) return text;
+
+    // 1) 相邻重复段去重：任意位置找到"连续相同的一块"，删掉重复份，循环直到稳定
+    let out = text;
+    let changed = true;
+    let guard = 0;
+    while (changed && guard++ < 10) {
+      changed = false;
+      // 块长从大到小，优先去重长段（避免小窗口切坏内容）
+      const maxLen = Math.min(Math.floor(out.length / 2), 1500);
+      for (let len = maxLen; len >= 30; len--) {
+        let i = 0;
+        while (i + 2 * len <= out.length) {
+          const block = out.slice(i, i + len);
+          if (out.startsWith(block, i + len)) {
+            out = out.slice(0, i + len) + out.slice(i + 2 * len);
+            changed = true;
+            break;
+          }
+          i++;
+        }
+        if (changed) break;
+      }
+    }
+    if (out !== text) return out;
+
+    // 2) 末尾小段重复兜底（原有逻辑）
+    const maxLen2 = Math.floor(text.length / 2);
+    for (let len = Math.min(maxLen2, 200); len >= 20; len--) {
       const tail = text.slice(text.length - len);
       const pos = text.indexOf(tail);
       if (pos !== -1 && pos < text.length - len) {
-        // 早于末尾也出现 → 末尾是重复
         return text.slice(0, pos + len);
       }
     }
