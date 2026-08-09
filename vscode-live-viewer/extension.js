@@ -1,0 +1,342 @@
+// 微信远程实时视图：监听 ~/.claude/projects/**/*.jsonl 增量，实时推送消息到 webview
+const vscode = require("vscode");
+const fs = require("fs");
+const path = require("path");
+
+const SESSION_ROOT = path.join(
+  process.env.USERPROFILE || process.env.HOME || "",
+  ".claude",
+  "projects"
+);
+const POLL_MS = 1000; // 轮询间隔
+
+/** @type {Map<string, {filePath:string, offset:number, size:number}>} */
+const trackers = new Map(); // sessionId -> 偏移跟踪
+
+function activate(context) {
+  const provider = new LiveViewProvider();
+  const registration = vscode.window.registerWebviewViewProvider(
+    "wecomLiveView",
+    provider
+  );
+  context.subscriptions.push(registration);
+}
+
+class LiveViewProvider {
+  resolveWebviewView(webviewView) {
+    this._view = webviewView;
+    webviewView.webview.options = { enableScripts: true };
+    webviewView.webview.html = this._html();
+
+    webviewView.webview.onDidReceiveMessage((msg) => {
+      if (msg.type === "listSessions") {
+        this._sendSessions();
+      } else if (msg.type === "selectSession") {
+        this._sendHistory(msg.sessionId);
+      } else if (msg.type === "refresh") {
+        this._sendSessions();
+      }
+    });
+
+    // 启动轮询
+    this._timer = setInterval(() => this._poll(), POLL_MS);
+    // 视图关闭时清理定时器
+    webviewView.onDidDispose(() => {
+      if (this._timer) clearInterval(this._timer);
+      this._timer = null;
+    });
+
+    // 初始推送会话列表
+    setTimeout(() => this._sendSessions(), 500);
+  }
+
+  /** 扫描所有 jsonl 会话，按 mtime 排序 */
+  _listSessions() {
+    const out = [];
+    if (!fs.existsSync(SESSION_ROOT)) return out;
+    for (const proj of fs.readdirSync(SESSION_ROOT)) {
+      const projDir = path.join(SESSION_ROOT, proj);
+      let st;
+      try {
+        st = fs.statSync(projDir);
+      } catch {
+        continue;
+      }
+      if (!st.isDirectory()) continue;
+      let files;
+      try {
+        files = fs.readdirSync(projDir).filter((f) => f.endsWith(".jsonl"));
+      } catch {
+        continue;
+      }
+      for (const f of files) {
+        const p = path.join(projDir, f);
+        try {
+          const s = fs.statSync(p);
+          if (!s.isFile() || s.size === 0) continue;
+          out.push({
+            sessionId: f.replace(".jsonl", ""),
+            project: proj,
+            name: this._sessionName(p),
+            mtimeMs: s.mtimeMs,
+            size: s.size,
+          });
+        } catch {}
+      }
+    }
+    out.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    return out.slice(0, 50);
+  }
+
+  /** 从 jsonl 尾部提取会话显示名（lastPrompt > slug > sessionId 前8位） */
+  _sessionName(filePath) {
+    try {
+      const size = fs.statSync(filePath).size;
+      const len = Math.min(size, 16384);
+      const fd = fs.openSync(filePath, "r");
+      const buf = Buffer.alloc(len);
+      fs.readSync(fd, buf, 0, len, size - len);
+      fs.closeSync(fd);
+      let lastPrompt = null;
+      let slug = null;
+      for (const line of buf.toString("utf8").split("\n")) {
+        const l = line.trim();
+        if (!l) continue;
+        try {
+          const d = JSON.parse(l);
+          if (d.slug) slug = d.slug;
+          if (d.type === "last-prompt" && d.lastPrompt) lastPrompt = d.lastPrompt;
+        } catch {}
+      }
+      if (lastPrompt) {
+        const p = lastPrompt.replace(/\s+/g, " ").trim();
+        return p.length > 40 ? p.slice(0, 40) + "…" : p;
+      }
+      if (slug) return slug;
+    } catch {}
+    return filePath.replace(/\.jsonl$/, "").split(/[\\/]/).pop().slice(0, 8);
+  }
+
+  _sendSessions() {
+    if (!this._view) return;
+    const sessions = this._listSessions();
+    // 同步 tracker（新会话初始化偏移）
+    for (const s of sessions) {
+      if (!trackers.has(s.sessionId)) {
+        trackers.set(s.sessionId, {
+          filePath: this._filePath(s.project, s.sessionId),
+          offset: 0,
+          size: 0,
+        });
+      }
+    }
+    this._view.webview.postMessage({ type: "sessions", sessions });
+  }
+
+  _filePath(project, sessionId) {
+    return path.join(SESSION_ROOT, project, sessionId + ".jsonl");
+  }
+
+  /** 发送某会话完整历史（切换会话时） */
+  _sendHistory(sessionId) {
+    if (!this._view) return;
+    const t = trackers.get(sessionId);
+    if (!t || !fs.existsSync(t.filePath)) {
+      this._view.webview.postMessage({ type: "messages", sessionId, messages: [] });
+      return;
+    }
+    const size = fs.statSync(t.filePath).size;
+    t.offset = size; // 历史已读，后续只推增量
+    const messages = this._parseRange(t.filePath, 0, size);
+    this._view.webview.postMessage({ type: "messages", sessionId, messages });
+  }
+
+  /** 轮询所有会话的增量 */
+  _poll() {
+    if (!this._view) return;
+    for (const [sessionId, t] of trackers) {
+      if (!fs.existsSync(t.filePath)) continue;
+      let size;
+      try {
+        size = fs.statSync(t.filePath).size;
+      } catch {
+        continue;
+      }
+      if (size <= t.offset) continue;
+      const messages = this._parseRange(t.filePath, t.offset, size);
+      t.offset = size;
+      if (messages.length) {
+        this._view.webview.postMessage({ type: "messages", sessionId, messages });
+      }
+    }
+  }
+
+  /** 解析 jsonl 的 [start, end) 字节区间，提取消息 */
+  _parseRange(filePath, start, end) {
+    const messages = [];
+    try {
+      const fd = fs.openSync(filePath, "r");
+      const buf = Buffer.alloc(end - start);
+      fs.readSync(fd, buf, 0, end - start, start);
+      fs.closeSync(fd);
+      for (const line of buf.toString("utf8").split("\n")) {
+        const m = this._parseLine(line);
+        if (m) messages.push(m);
+      }
+    } catch {}
+    return messages;
+  }
+
+  /** 解析一行 jsonl → 消息对象或 null */
+  _parseLine(line) {
+    const l = line.trim();
+    if (!l) return null;
+    let d;
+    try {
+      d = JSON.parse(l);
+    } catch {
+      return null;
+    }
+    const msg = d.message;
+    if (!msg || typeof msg !== "object") return null;
+    const content = msg.content;
+
+    if (d.type === "user") {
+      let text = "";
+      if (typeof content === "string") text = content;
+      else if (Array.isArray(content)) {
+        text = content
+          .filter((i) => i && i.type === "text" && i.text)
+          .map((i) => i.text)
+          .join("\n");
+      }
+      if (text.trim()) {
+        return { role: "user", text: text.trim(), ts: d.timestamp };
+      }
+    } else if (d.type === "assistant") {
+      if (Array.isArray(content)) {
+        const parts = [];
+        for (const item of content) {
+          if (!item) continue;
+          if (item.type === "text" && item.text && item.text.trim()) {
+            parts.push({ kind: "text", text: item.text.trim() });
+          } else if (item.type === "thinking" && item.thinking) {
+            parts.push({ kind: "thinking", text: item.thinking.trim() });
+          } else if (item.type === "tool_use" && item.name) {
+            let input = "";
+            try {
+              input = JSON.stringify(item.input || {}, null, 1);
+            } catch {}
+            parts.push({ kind: "tool", name: item.name, text: input });
+          }
+        }
+        if (parts.length) {
+          return { role: "assistant", parts, ts: d.timestamp };
+        }
+      }
+    }
+    return null;
+  }
+
+  _html() {
+    return `<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<style>
+  body { font-family: var(--vscode-font-family); font-size: 13px; margin: 0; padding: 8px; color: var(--vscode-foreground); }
+  .toolbar { display: flex; gap: 6px; margin-bottom: 8px; align-items: center; }
+  select { flex: 1; background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); padding: 3px; }
+  button { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 3px 10px; cursor: pointer; }
+  .msg { margin: 6px 0; padding: 6px 8px; border-radius: 4px; white-space: pre-wrap; word-break: break-word; }
+  .user { background: var(--vscode-editor-selectionBackground); }
+  .assistant { background: var(--vscode-editor-background); border: 1px solid var(--vscode-panel-border); }
+  .tool { color: var(--vscode-charts-orange, #d19a66); font-size: 12px; margin: 2px 0; }
+  .thinking { color: var(--vscode-descriptionForeground); font-style: italic; font-size: 12px; margin: 2px 0; white-space: pre-wrap; }
+  .label { font-weight: 600; margin-bottom: 4px; }
+  .tool-label { color: #d19a66; font-weight: 600; }
+  .empty { color: var(--vscode-descriptionForeground); text-align: center; margin-top: 40px; }
+  #list { overflow-y: auto; }
+</style>
+</head>
+<body>
+  <div class="toolbar">
+    <select id="sessionSel"></select>
+    <button id="refreshBtn">刷新</button>
+  </div>
+  <div id="list"><div class="empty">正在加载会话…</div></div>
+<script>
+  const vscode = acquireVsCodeApi();
+  const sel = document.getElementById('sessionSel');
+  const list = document.getElementById('list');
+  let current = null;
+
+  function esc(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  function render(messages) {
+    if (!messages || !messages.length) {
+      list.innerHTML = '<div class="empty">暂无消息。在微信里操作 Claude Code 后这里会实时显示。</div>';
+      return;
+    }
+    list.innerHTML = messages.map(m => {
+      if (m.role === 'user') {
+        return '<div class="msg user"><div class="label">🧑 你</div>' + esc(m.text) + '</div>';
+      }
+      if (m.role === 'assistant') {
+        const parts = (m.parts || []).map(p => {
+          if (p.kind === 'text') return esc(p.text);
+          if (p.kind === 'thinking') return '<div class="thinking">🤔 ' + esc(p.text) + '</div>';
+          if (p.kind === 'tool') return '<div class="tool"><span class="tool-label">🔧 ' + esc(p.name || '工具') + '</span>' + (p.text ? '<pre>' + esc(p.text) + '</pre>' : '') + '</div>';
+          return '';
+        }).join('');
+        return '<div class="msg assistant"><div class="label">🤖 Claude</div>' + parts + '</div>';
+      }
+      return '';
+    }).join('');
+    list.scrollTop = list.scrollHeight;
+  }
+
+  function loadSession(sessionId) {
+    current = sessionId;
+    vscode.postMessage({ type: 'selectSession', sessionId });
+  }
+
+  sel.addEventListener('change', () => {
+    if (sel.value) loadSession(sel.value);
+  });
+  document.getElementById('refreshBtn').addEventListener('click', () => {
+    vscode.postMessage({ type: 'listSessions' });
+  });
+
+  window.addEventListener('message', (ev) => {
+    const msg = ev.data;
+    if (msg.type === 'sessions') {
+      const cur = sel.value;
+      sel.innerHTML = msg.sessions.map(s =>
+        '<option value="' + s.sessionId + '" title="' + s.project + '">' + esc(s.name || s.sessionId.slice(0, 8)) + '</option>'
+      ).join('');
+      if (cur && msg.sessions.some(s => s.sessionId === cur)) {
+        sel.value = cur;
+      } else if (msg.sessions.length) {
+        sel.value = msg.sessions[0].sessionId;
+        loadSession(msg.sessions[0].sessionId);
+      } else {
+        list.innerHTML = '<div class="empty">暂无会话。用微信操作 Claude Code 后自动出现。</div>';
+      }
+    } else if (msg.type === 'messages') {
+      if (current === msg.sessionId) render(msg.messages);
+    }
+  });
+
+  vscode.postMessage({ type: 'listSessions' });
+</script>
+</body>
+</html>`;
+  }
+}
+
+function deactivate() {}
+
+module.exports = { activate, deactivate };

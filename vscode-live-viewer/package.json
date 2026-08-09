@@ -1,0 +1,34 @@
+{
+  "name": "wecom-live-viewer",
+  "displayName": "微信远程实时",
+  "description": "实时显示企业微信远程操作的 Claude Code 会话消息流（jsonl 监听）",
+  "version": "0.1.0",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "wecomLive",
+          "title": "微信远程",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "wecomLive": [
+        {
+          "type": "webview",
+          "id": "wecomLiveView",
+          "name": "实时消息",
+          "contextualTitle": "微信远程实时消息"
+        }
+      ]
+    }
+  }
+}
