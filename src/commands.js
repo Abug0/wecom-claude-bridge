@@ -1,7 +1,7 @@
 // 命令解析器
 // 支持：/项目 <路径|名称>、/新开 <任务名>、/切换 <任务名|编号>、/会话列表、/继续、/帮助、/重置、/状态、/pin、/别名
 
-const CMD_RE = /^\/(项目|新开|切换|列表|会话列表|接管|继续|重置|帮助|help|状态|pin|别名|盯|不盯|watch|unwatch|模式|重启)\s*(.*)$/;
+const CMD_RE = /^\/(项目|新开|切换|列表|会话列表|接管|继续|重置|帮助|help|状态|pin|别名|盯|不盯|watch|unwatch|模式|重启|停止|中止|stop)\s*(.*)$/;
 
 /**
  * 解析微信消息
@@ -72,6 +72,11 @@ function parseCommand(content) {
     case "重启": {
       return { type: "restart" };
     }
+    case "停止":
+    case "中止":
+    case "stop": {
+      return { type: "stop" };
+    }
     case "帮助":
     case "help":
     default:
@@ -91,6 +96,7 @@ const HELP_TEXT = `可用的命令：
 /不盯               停止实时监控
 /模式 <类型>        切换权限模式：default/accept/bypass/plan
 /重启               重启桥接服务（由桥接自行处理，不会中断）
+/停止               中止当前任务并清空排队消息
 /pin <任务名|编号>   置顶/取消置顶会话（⭐）
 /别名 <任务名|编号> <新名>  给会话设置别名
 /重置                重置当前项目状态

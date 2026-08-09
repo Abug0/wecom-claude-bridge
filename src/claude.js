@@ -20,6 +20,7 @@ class ClaudeRunner {
     this.activeStartedAt = null; // 当前任务开始时间戳
     this.watchInfo = null; // 会话实时监控状态（/盯 用）
     this.permissionMode = cfg.claude.permissionMode; // 当前权限模式（/模式 可切换）
+    this.aborted = false; // /停止 中止标志
   }
 
   /**
@@ -85,6 +86,10 @@ class ClaudeRunner {
       }
       case "restart": {
         await this._handleRestart(ctx);
+        break;
+      }
+      case "stop": {
+        await this._handleStop(ctx);
         break;
       }
       case "prompt": {
@@ -630,6 +635,12 @@ class ClaudeRunner {
 
       const { code, stdout, stderr, error, result } = await this._spawn(args, job.cwd, onPartial);
 
+      // 被 /停止 中止：不推送结果，直接收尾
+      if (this.aborted) {
+        this.aborted = false;
+        return;
+      }
+
       // 最终结果：优先用流式累积的回复文本；若无则回退解析
       let finalResult =
         (replyBuf && replyBuf.trim()) || result || this._extractResult(stdout, stderr, code, error);
@@ -1072,6 +1083,37 @@ class ClaudeRunner {
     }
     // 给新进程 1.5s 拉起时间，然后退出当前进程释放 8787 端口
     setTimeout(() => process.exit(0), 1500);
+  }
+
+  /**
+   * /停止：中止当前正在执行的 claude 任务，并清空待处理队列。
+   * 通过 _run 里的 aborted 标志阻止结果推送。
+   */
+  async _handleStop(ctx) {
+    this.aborted = true;
+    const queueN = this.queue.length;
+    this.queue = [];
+    if (this.active) {
+      try {
+        this._killTree(this.active.pid);
+        this.log.info("已杀掉当前 claude 进程", { pid: this.active.pid });
+      } catch (e) {
+        this.log.error("杀进程失败", { err: e.message });
+      }
+      this.active = null;
+    }
+    // 结束当前流式（用"已中止"定型）
+    if (this.pusher && typeof this.pusher.endTask === "function") {
+      await this.pusher.endTask(null, "⏹ 已中止", false);
+    }
+    this.activeJobName = null;
+    this.activeStartedAt = null;
+    await this.pusher.sendNotification(
+      queueN > 0
+        ? `⏹ 已中止当前任务，并清空 ${queueN} 条排队消息。`
+        : "⏹ 已中止当前任务。"
+    );
+    this.log.info("中止任务", { queueN });
   }
 
   /**
