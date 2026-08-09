@@ -1317,16 +1317,26 @@ class ClaudeRunner {
   async _handleModel(ctx, cmd) {
     if (!cmd.model) {
       const def = this._defaultModel();
-      const lines = [
-        `默认模型: ${def}`,
-        `当前覆盖: ${this.model || "无（用默认）"}`,
-        "",
-        "常用可选（按当前服务商）：",
-        ...this._modelSuggestions().map((m, i) => `  ${i + 1}. ${m}${m === def ? " 👈默认" : ""}`),
-        "",
-        "切换: /model <模型ID>",
-      ];
-      return this.pusher.sendNotification(lines.join("\n"));
+      // 读缓存：实际探测过的可用模型
+      const cached = this._readModelCache();
+      if (cached && cached.length) {
+        const lines = [
+          `默认模型: ${def}`,
+          `当前覆盖: ${this.model || "无（用默认）"}`,
+          "",
+          "✅ 实际可用模型（实测确认）：",
+          ...cached.map((m) => `  - ${m}${m === def ? " 👈默认" : ""}`),
+          "",
+          "切换: /model <模型ID>",
+        ];
+        return this.pusher.sendNotification(lines.join("\n"));
+      }
+      // 无缓存 → 立即返回当前，后台探测
+      await this.pusher.sendNotification(
+        `默认模型: ${def}\n当前覆盖: ${this.model || "无（用默认）"}\n\n🔍 正在探测可用模型，结果稍后推送…`
+      );
+      this._probeModelsAsync(def);
+      return;
     }
     this.model = cmd.model.trim();
     await this.pusher.sendNotification(`✅ 已切换模型为「${this.model}」，下一条消息生效。`);
@@ -1334,18 +1344,97 @@ class ClaudeRunner {
   }
 
   /**
-   * 常用模型建议列表（服务商为 deepseek 聚合代理，未支持动态查询）
+   * 候选模型列表（探测用）：默认模型 + deepseek 系列常见 ID
    */
-  _modelSuggestions() {
+  _modelCandidates(def) {
     const list = [
       "deepseek-v4-flash[1m]",
       "deepseek-v4-flash",
       "deepseek-v4-pro",
       "deepseek-v4",
     ];
-    const def = this._defaultModel();
-    if (!list.includes(def)) list.unshift(def);
+    if (def && !list.includes(def)) list.unshift(def);
     return list;
+  }
+
+  /**
+   * 后台探测可用模型：对每个候选发一个极短 prompt，成功的写入缓存
+   */
+  _probeModelsAsync(def) {
+    const candidates = this._modelCandidates(def);
+    const results = [];
+    const run = async (i) => {
+      if (i >= candidates.length) {
+        this._writeModelCache(results);
+        if (results.length) {
+          await this.pusher.sendNotification(
+            "✅ 可用模型探测完成：\n" +
+              results.map((m) => `  - ${m}`).join("\n") +
+              "\n\n切换: /model <模型ID>"
+          );
+        } else {
+          await this.pusher.sendNotification(
+            "⚠️ 未探测到可用模型（可能服务商限制）。用 /model <ID> 手动指定试试。"
+          );
+        }
+        return;
+      }
+      const m = candidates[i];
+      try {
+        const args = [
+          "-p",
+          "--verbose",
+          "--output-format",
+          "stream-json",
+          "--include-partial-messages",
+          "--permission-mode",
+          "bypassPermissions",
+          "--model",
+          m,
+          "--no-session-persistence",
+          "hi",
+        ];
+        const { code, result } = await this._spawn(args, this.cfg.claude.workdir, () => {}, null);
+        if (code === 0 && result && !String(result).startsWith("❌")) {
+          results.push(m);
+          this.log.info("模型探测成功", { model: m });
+        } else {
+          this.log.info("模型探测失败", { model: m, code });
+        }
+      } catch (e) {
+        this.log.info("模型探测异常", { model: m, err: e.message });
+      }
+      run(i + 1);
+    };
+    run(0);
+  }
+
+  _modelCacheFile() {
+    return path.join(path.dirname(this.cfg.registry.file), "models-cache.json");
+  }
+
+  _readModelCache() {
+    try {
+      const f = this._modelCacheFile();
+      if (!fs.existsSync(f)) return null;
+      const data = JSON.parse(fs.readFileSync(f, "utf8"));
+      // 24h 内有效
+      if (Date.now() - (data.ts || 0) > 24 * 3600 * 1000) return null;
+      return Array.isArray(data.models) ? data.models : null;
+    } catch {
+      return null;
+    }
+  }
+
+  _writeModelCache(models) {
+    try {
+      const f = this._modelCacheFile();
+      const dir = path.dirname(f);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(f, JSON.stringify({ ts: Date.now(), models }), "utf8");
+    } catch (e) {
+      this.log.error("写入模型缓存失败", { err: e.message });
+    }
   }
 
   /**
