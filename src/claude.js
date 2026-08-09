@@ -956,8 +956,10 @@ class ClaudeRunner {
     return new Promise((resolve) => {
       const bin = this.cfg.claude.bin;
       // claude 在 Windows 上需要 git-bash；子进程需继承该环境变量
+      // 同时注入 settings 里的 ANTHROPIC_* env（模型别名映射等，与 VSCode 一致）
       const env = {
         ...process.env,
+        ...this._loadSettingsEnv(),
         CLAUDE_CODE_GIT_BASH_PATH: this.cfg.claude.gitBashPath,
       };
       const child = spawn(bin, args, {
@@ -1316,22 +1318,47 @@ class ClaudeRunner {
    */
   async _handleModel(ctx, cmd) {
     if (!cmd.model) {
-      const def = this._defaultModel();
+      const env = this._loadSettingsEnv();
+      const def = env.ANTHROPIC_MODEL || this._defaultModel();
+      const opt = (label, v) => `  ${label} → ${v}`;
       const lines = [
         `当前模型: ${this.model || def}`,
         "",
-        "可用（与 VSCode /model 一致）：",
-        "sonnet, opus, haiku, fable, best,",
-        "sonnet[1m], opus[1m], fable[1m], opusplan,",
-        "default, 或完整模型 ID",
+        "可选模型（与 VSCode /model 一致）：",
+        opt("Default", def),
+        opt("Opus", env.ANTHROPIC_DEFAULT_OPUS_MODEL || def),
+        opt("Sonnet", env.ANTHROPIC_DEFAULT_SONNET_MODEL || def),
+        opt("Haiku", env.ANTHROPIC_DEFAULT_HAIKU_MODEL || def),
         "",
-        "切换: /model <别名或ID>",
+        "切换: /model <default|opus|sonnet|haiku|完整ID>",
       ];
       return this.pusher.sendNotification(lines.join("\n"));
     }
     this.model = cmd.model.trim();
     await this.pusher.sendNotification(`✅ 已切换模型为「${this.model}」，下一条消息生效。`);
     this.log.info("切换模型", { model: this.model });
+  }
+
+  /**
+   * 读取 Claude 配置里的 env（~/.claude/settings.json + 项目级 settings）
+   * 包含 ANTHROPIC_MODEL、ANTHROPIC_DEFAULT_*_MODEL 等模型别名映射，
+   * 用于与 VSCode 的 /model 列表保持一致，并注入 claude 子进程。
+   */
+  _loadSettingsEnv() {
+    const merged = {};
+    const files = [
+      path.join(process.env.USERPROFILE || "", ".claude", "settings.json"),
+      path.join(this.cfg.claude.workdir, ".claude", "settings.json"),
+      path.join(this.cfg.claude.workdir, ".claude", "settings.local.json"),
+    ];
+    for (const f of files) {
+      try {
+        if (!fs.existsSync(f)) continue;
+        const d = JSON.parse(fs.readFileSync(f, "utf8"));
+        if (d.env) Object.assign(merged, d.env);
+      } catch {}
+    }
+    return merged;
   }
 
   /**
