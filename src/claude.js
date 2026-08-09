@@ -565,25 +565,27 @@ class ClaudeRunner {
     this.activeJobName = job.taskName;
     this.activeStartedAt = start;
 
-    // 长任务心跳：超过阈值后定期推送"仍在运行"，间隔递增（避免刷屏）
-    const hbCfg = (this.cfg.pusher && this.cfg.pusher.heartbeatStartMs) ? this.cfg.pusher : {};
-    const hbStart = hbCfg.heartbeatStartMs || 60 * 1000; // 首次 60s 后提示
-    const hbInterval = hbCfg.heartbeatIntervalMs || 120 * 1000; // 初始间隔 2min
-    const hbCap = hbCfg.heartbeatCapMs || 300 * 1000; // 封顶 5min 一次
+    // 长任务心跳（默认关闭）：超过阈值后定期推送"仍在运行"，间隔递增（避免刷屏）
+    // 通过 HEARTBEAT_ENABLED=1 开启。流式本身实时展示进展 + 空闲超时兜底，心跳通常不需要。
     let hbTimer = null;
-    let hbNext = hbStart;
-    const scheduleHeartbeat = () => {
-      const elapsed = Date.now() - start;
-      if (elapsed < hbNext) {
-        hbTimer = setTimeout(scheduleHeartbeat, hbNext - elapsed);
-      } else {
-        this._notify(`[${job.taskName}] ⏳ 仍在运行，已耗时 ${Math.round(elapsed / 1000)}s…`);
-        // 间隔递增：2min → 4min → 5min(封顶)… 长任务也不会刷屏
-        hbNext = Math.min(Math.max(hbInterval, hbNext * 2), hbCap);
-        hbTimer = setTimeout(scheduleHeartbeat, hbNext);
-      }
-    };
-    hbTimer = setTimeout(scheduleHeartbeat, hbStart);
+    const hbCfg = this.cfg.pusher || {};
+    if (hbCfg.heartbeatEnabled) {
+      const hbStart = hbCfg.heartbeatStartMs || 60 * 1000;
+      const hbInterval = hbCfg.heartbeatIntervalMs || 120 * 1000;
+      const hbCap = hbCfg.heartbeatCapMs || 300 * 1000;
+      let hbNext = hbStart;
+      const scheduleHeartbeat = () => {
+        const elapsed = Date.now() - start;
+        if (elapsed < hbNext) {
+          hbTimer = setTimeout(scheduleHeartbeat, hbNext - elapsed);
+        } else {
+          this._notify(`[${job.taskName}] ⏳ 仍在运行，已耗时 ${Math.round(elapsed / 1000)}s…`);
+          hbNext = Math.min(Math.max(hbInterval, hbNext * 2), hbCap);
+          hbTimer = setTimeout(scheduleHeartbeat, hbNext);
+        }
+      };
+      hbTimer = setTimeout(scheduleHeartbeat, hbStart);
+    }
 
     // 开启智能机器人流式会话（若 bot 可用），对话内容走打字机
     let streamStarted = false;
