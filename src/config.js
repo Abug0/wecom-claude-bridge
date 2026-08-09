@@ -18,7 +18,7 @@ function loadConfig() {
       // 云转发：推送走云服务器（源IP=云IP），解决企业微信可信IP校验
       sendViaCloud:
         process.env.SEND_VIA_CLOUD === "1"
-          ? process.env.SEND_CLOUD_ENDPOINT || "https://www.your-domain.com/wecom/send"
+          ? process.env.SEND_CLOUD_ENDPOINT || "https://your-domain.com/wecom/send"
           : null,
       bridgeSecret: process.env.BRIDGE_SECRET || null,
     },

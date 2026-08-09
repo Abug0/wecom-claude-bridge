@@ -92,7 +92,7 @@ class WecomApi {
     const cfg = this.cfg;
     // 云转发模式：POST 到云服务器 /wecom/send，源IP为云服务器（企业微信可信IP只需加云IP）
     if (cfg.wecom.sendViaCloud && cfg.wecom.bridgeSecret) {
-      const endpoint = cfg.wecom.sendViaCloud || "https://www.your-domain.com/wecom/send";
+      const endpoint = cfg.wecom.sendViaCloud || "https://your-domain.com/wecom/send";
       const res = await request(
         {
           hostname: new URL(endpoint).hostname,
