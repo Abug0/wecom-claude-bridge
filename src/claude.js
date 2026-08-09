@@ -19,6 +19,7 @@ class ClaudeRunner {
     this.activeJobName = null; // 当前正在执行的任务名（/状态 用）
     this.activeStartedAt = null; // 当前任务开始时间戳
     this.watchInfo = null; // 会话实时监控状态（/盯 用）
+    this.permissionMode = cfg.claude.permissionMode; // 当前权限模式（/模式 可切换）
   }
 
   /**
@@ -76,6 +77,10 @@ class ClaudeRunner {
       }
       case "unwatch": {
         await this._handleUnwatch(ctx);
+        break;
+      }
+      case "mode": {
+        await this._handleMode(ctx, cmd);
         break;
       }
       case "prompt": {
@@ -713,11 +718,16 @@ class ClaudeRunner {
       "stream-json",
       "--include-partial-messages",
       "--permission-mode",
-      cfg.permissionMode,
+      this.permissionMode || cfg.permissionMode,
     ];
     // 权限确认工具（P5 阶段启用）
     if (cfg.permissionPromptTool) {
       base.push("--permission-prompt-tool", cfg.permissionPromptTool);
+    }
+    // "总是允许"的工具列表（授权时用户选择"总是允许 <工具>"）
+    const allowed = this._loadAllowedTools();
+    if (allowed.length) {
+      base.push("--allowedTools", allowed.join(" "));
     }
     if (job.isNew) {
       return [...base, "--session-id", job.sessionId, "--name", job.taskName, job.prompt];
@@ -998,6 +1008,71 @@ class ClaudeRunner {
     await this.pusher.sendNotification(
       stopped ? "📡 已停止监控。" : "📡 当前没有进行中的监控。"
     );
+  }
+
+  /**
+   * /模式 <default|accept|bypass|plan>：切换 claude 进程的权限模式
+   * 与 VSCode 里的权限模式一致，让微信远程操作时授权体验更灵活。
+   */
+  async _handleMode(ctx, cmd) {
+    const MODES = {
+      default: "default",
+      accept: "acceptEdits",
+      acceptedits: "acceptEdits",
+      bypass: "bypassPermissions",
+      bypasspermissions: "bypassPermissions",
+      plan: "plan",
+    };
+    const mode = MODES[cmd.mode];
+    if (!mode) {
+      return this.pusher.sendNotification(
+        "⚠️ 无效模式。支持: /模式 default（每次确认）、/模式 accept（自动接受编辑）、/模式 bypass（全程免确认）、/模式 plan（只读规划）"
+      );
+    }
+    this.permissionMode = mode;
+    const desc = {
+      default: "每次工具调用需确认",
+      acceptEdits: "自动接受文件编辑，其他仍需确认",
+      bypassPermissions: "全程免确认（高风险）",
+      plan: "只读规划，不执行",
+    };
+    await this.pusher.sendNotification(`✅ 已切换权限模式为「${mode}」：${desc[mode]}`);
+    this.log.info("切换权限模式", { mode });
+  }
+
+  /**
+   * 读取"总是允许"的工具列表（持久化在 registry 目录下）
+   * @returns {string[]} 形如 ["Bash(git:*)", "Write"] 的规则
+   */
+  _loadAllowedTools() {
+    try {
+      const file = path.join(
+        path.dirname(this.cfg.registry.file),
+        "allowed-tools.json"
+      );
+      if (!fs.existsSync(file)) return [];
+      const data = JSON.parse(fs.readFileSync(file, "utf8"));
+      return Array.isArray(data) ? data : [];
+    } catch (e) {
+      this.log.error("读取 always-allow 列表失败", { err: e.message });
+      return [];
+    }
+  }
+
+  /** 把工具加入"总是允许"列表（持久化） */
+  _addAllowedTool(rule) {
+    try {
+      const dir = path.dirname(this.cfg.registry.file);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const file = path.join(dir, "allowed-tools.json");
+      const list = this._loadAllowedTools();
+      if (!list.includes(rule)) list.push(rule);
+      fs.writeFileSync(file, JSON.stringify(list, null, 2), "utf8");
+      return true;
+    } catch (e) {
+      this.log.error("写入 always-allow 列表失败", { err: e.message });
+      return false;
+    }
   }
 
   _parseWatchEvent(line) {
