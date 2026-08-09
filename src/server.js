@@ -127,7 +127,10 @@ function buildServer({ cfg, log, registry, runner, api, approver }) {
   });
 
   app.get("/healthz", (_req, res) => {
-    res.json({ ok: true, queue: runner.queue.length, running: runner.running });
+    const queueN = runner.queues
+      ? [...runner.queues.values()].reduce((n, q) => n + q.length, 0)
+      : 0;
+    res.json({ ok: true, queue: queueN, running: runner.running ? runner.running.size : 0 });
   });
 
   return app;
