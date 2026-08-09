@@ -24,6 +24,8 @@ class ClaudeRunner {
     this.permissionMode = cfg.claude.permissionMode; // 当前权限模式（/模式 可切换）
     this.aborting = new Set(); // /停止 待中止的 sessionId 集合（并行安全）
     this.model = null; // 当前模型覆盖（/model 可切换，null=用默认）
+    this.effort = null; // 当前推理努力程度（/effort，null=用默认）
+    this.thinkingEnabled = false; // /thinking 思考内容展示开关（默认只显示"思考中…"）
   }
 
   /**
@@ -109,6 +111,14 @@ class ClaudeRunner {
       }
       case "export": {
         await this._handleExport(ctx, cmd);
+        break;
+      }
+      case "effort": {
+        await this._handleEffort(ctx, cmd);
+        break;
+      }
+      case "thinking": {
+        await this._handleThinking(ctx, cmd);
         break;
       }
       case "prompt": {
@@ -758,11 +768,31 @@ class ClaudeRunner {
 
       // 类型化增量处理：思考/工具走流式分片（去重），回复仅累积不推送
       let replyBuf = "";
+      let thinkingBuf = "";
+      let thinkingTimer = null;
+      const flushThinking = () => {
+        if (thinkingTimer) {
+          clearTimeout(thinkingTimer);
+          thinkingTimer = null;
+        }
+        const t = thinkingBuf.trim();
+        thinkingBuf = "";
+        if (t) {
+          this.pusher.pushStyled(job.taskName, t, "thinking").catch(() => {});
+        }
+      };
       const onPartial = ({ kind, text }) => {
         if (kind === "reply") {
           replyBuf += text;
         } else if (kind === "thinking") {
-          if (!pushedThinking) {
+          if (this.thinkingEnabled) {
+            // 展示思考内容：累积 + 节流推送（避免刷屏）
+            thinkingBuf += text;
+            if (thinkingBuf.length >= 200) flushThinking();
+            else if (!thinkingTimer) {
+              thinkingTimer = setTimeout(flushThinking, 1500);
+            }
+          } else if (!pushedThinking) {
             pushedThinking = true;
             this.pusher.pushStyled(job.taskName, "思考中…", "thinking").catch(() => {});
           }
@@ -802,6 +832,10 @@ class ClaudeRunner {
     } finally {
       if (hbTimer) clearTimeout(hbTimer);
       hbTimer = null;
+      // flush 剩余思考内容（/thinking on 时）
+      if (this.thinkingEnabled && typeof flushThinking === "function") {
+        flushThinking();
+      }
       this.activeJobs.delete(job.sessionId);
       this.activeJobName = this.activeJobs.size
         ? [...this.activeJobs.values()][0].taskName
@@ -897,6 +931,10 @@ class ClaudeRunner {
     // /model 切换模型（未设置则用默认）
     if (this.model) {
       base.push("--model", this.model);
+    }
+    // /effort 切换推理努力程度（未设置则用默认）
+    if (this.effort) {
+      base.push("--effort", this.effort);
     }
     if (job.isNew) {
       return [...base, "--session-id", job.sessionId, "--name", job.taskName, job.prompt];
@@ -1285,6 +1323,42 @@ class ClaudeRunner {
     this.model = cmd.model.trim();
     await this.pusher.sendNotification(`✅ 已切换模型为「${this.model}」，下一条消息生效。`);
     this.log.info("切换模型", { model: this.model });
+  }
+
+  /**
+   * /effort <low|medium|high|max>：切换推理努力程度（下一条消息生效）
+   */
+  async _handleEffort(ctx, cmd) {
+    const levels = ["low", "medium", "high", "max"];
+    if (!levels.includes(cmd.level)) {
+      return this.pusher.sendNotification("⚠️ 无效级别。支持: /effort low|medium|high|max");
+    }
+    this.effort = cmd.level;
+    await this.pusher.sendNotification(
+      `✅ 已切换推理努力程度为「${cmd.level}」，下一条消息生效。`
+    );
+    this.log.info("切换 effort", { level: cmd.level });
+  }
+
+  /**
+   * /thinking <on|off>：控制思考内容是否展示
+   * on → 流式推送完整思考内容（节流防刷屏）；off → 只显示"思考中…"
+   */
+  async _handleThinking(ctx, cmd) {
+    if (cmd.on === "on" || cmd.on === "1" || cmd.on === "true") {
+      this.thinkingEnabled = true;
+      await this.pusher.sendNotification(
+        "✅ 已开启思考内容展示——后续回复会实时推送推理过程（节流防刷屏）。"
+      );
+    } else if (cmd.on === "off" || cmd.on === "0" || cmd.on === "false") {
+      this.thinkingEnabled = false;
+      await this.pusher.sendNotification("✅ 已关闭思考内容展示（只显示「思考中…」）。");
+    } else {
+      await this.pusher.sendNotification(
+        `当前思考展示: ${this.thinkingEnabled ? "开启" : "关闭（只显示「思考中…」）"}\n用法: /thinking on|off`
+      );
+    }
+    this.log.info("切换 thinking 展示", { enabled: this.thinkingEnabled });
   }
 
   /**
