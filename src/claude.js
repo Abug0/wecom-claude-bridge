@@ -565,18 +565,22 @@ class ClaudeRunner {
     this.activeJobName = job.taskName;
     this.activeStartedAt = start;
 
-    // 长任务心跳：超过阈值后定期推送"仍在运行"（递归 setTimeout，finally 清理）
+    // 长任务心跳：超过阈值后定期推送"仍在运行"，间隔递增（避免刷屏）
     const hbCfg = (this.cfg.pusher && this.cfg.pusher.heartbeatStartMs) ? this.cfg.pusher : {};
-    const hbStart = hbCfg.heartbeatStartMs || 30 * 1000;
-    const hbInterval = hbCfg.heartbeatIntervalMs || 20 * 1000;
+    const hbStart = hbCfg.heartbeatStartMs || 60 * 1000; // 首次 60s 后提示
+    const hbInterval = hbCfg.heartbeatIntervalMs || 120 * 1000; // 初始间隔 2min
+    const hbCap = hbCfg.heartbeatCapMs || 300 * 1000; // 封顶 5min 一次
     let hbTimer = null;
+    let hbNext = hbStart;
     const scheduleHeartbeat = () => {
       const elapsed = Date.now() - start;
-      if (elapsed < hbStart) {
-        hbTimer = setTimeout(scheduleHeartbeat, hbStart - elapsed);
+      if (elapsed < hbNext) {
+        hbTimer = setTimeout(scheduleHeartbeat, hbNext - elapsed);
       } else {
         this._notify(`[${job.taskName}] ⏳ 仍在运行，已耗时 ${Math.round(elapsed / 1000)}s…`);
-        hbTimer = setTimeout(scheduleHeartbeat, hbInterval);
+        // 间隔递增：2min → 4min → 5min(封顶)… 长任务也不会刷屏
+        hbNext = Math.min(Math.max(hbInterval, hbNext * 2), hbCap);
+        hbTimer = setTimeout(scheduleHeartbeat, hbNext);
       }
     };
     hbTimer = setTimeout(scheduleHeartbeat, hbStart);

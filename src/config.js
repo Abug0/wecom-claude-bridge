@@ -60,8 +60,9 @@ function loadConfig() {
       maxBytes: 2048,
       tokenCacheMs: 5 * 60 * 1000,
       earlyRefreshMs: 5 * 60 * 1000,
-      heartbeatStartMs: 30 * 1000, // 长任务心跳启动阈值
-      heartbeatIntervalMs: 20 * 1000, // 心跳间隔
+      heartbeatStartMs: 60 * 1000, // 长任务心跳首次提示阈值（60s）
+      heartbeatIntervalMs: 120 * 1000, // 心跳初始间隔（2min）
+      heartbeatCapMs: 300 * 1000, // 心跳间隔封顶（5min，避免刷屏）
       completeNotifyMs: 60 * 1000, // 超过该时长任务完成后补"完成"总结
     },
     tunnel: {
