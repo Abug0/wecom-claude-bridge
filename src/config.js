@@ -43,6 +43,8 @@ function loadConfig() {
         process.env.CLAUDE_CODE_GIT_BASH_PATH ||
         "D:\\devtools\\git\\Git\\bin\\bash.exe",
       permissionPromptTool: "mcp__wecom_approver__approval_prompt",
+      // 任务完成后自动触发 VSCode 深链打开会话（默认开，VSCODE_AUTO_OPEN=0 关闭）
+      vscodeAutoOpen: process.env.VSCODE_AUTO_OPEN !== "0",
       idleTimeoutMs: Number(process.env.CLAUDE_IDLE_TIMEOUT_MS || 10 * 60 * 1000),
       totalTimeoutMs: Number(process.env.CLAUDE_TIMEOUT_MS || 0),
     },

@@ -848,6 +848,24 @@ class ClaudeRunner {
         await this.pusher.endTask(job.taskName);
       }
       this.registry.touchTask(encodeCwd(job.cwd), job.taskName);
+      // 任务完成后自动触发 VSCode 深链打开该会话（jsonl 已落盘，VSCode 从磁盘加载最新内容）
+      if (this.cfg.claude && this.cfg.claude.vscodeAutoOpen && job.sessionId) {
+        this._openInVscode(job.sessionId);
+      }
+    }
+  }
+
+  /**
+   * 通过 vscode:// 深链让 VSCode 打开/聚焦某会话（从磁盘加载全部内容）
+   * 实现"微信操作一轮后，VSCode 面板自动显示最新结果"（整轮级近实时）
+   */
+  _openInVscode(sessionId) {
+    try {
+      const url = `vscode://anthropic.claude-code/open?session=${sessionId}`;
+      execFileSync("cmd", ["/c", "start", "", url], { stdio: "ignore" });
+      this.log.info("已触发 VSCode 打开会话", { sessionId: sessionId.slice(0, 8) });
+    } catch (e) {
+      this.log.error("VSCode 深链触发失败", { err: e.message });
     }
   }
 
