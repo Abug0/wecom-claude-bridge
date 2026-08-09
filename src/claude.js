@@ -83,6 +83,10 @@ class ClaudeRunner {
         await this._handleMode(ctx, cmd);
         break;
       }
+      case "restart": {
+        await this._handleRestart(ctx);
+        break;
+      }
       case "prompt": {
         await this._handlePrompt(ctx, cmd);
         break;
@@ -1044,6 +1048,30 @@ class ClaudeRunner {
     };
     await this.pusher.sendNotification(`✅ 已切换权限模式为「${mode}」：${desc[mode]}`);
     this.log.info("切换权限模式", { mode });
+  }
+
+  /**
+   * /重启：重启桥接服务。
+   * 关键：由桥接自身处理（detached 拉起新进程后退出自己），
+   * 绝不经 claude 执行命令——否则 taskkill 会杀掉桥接宿主，导致输出通道中断。
+   */
+  async _handleRestart(ctx) {
+    await this.pusher.sendNotification("🔄 正在重启桥接服务，约 3 秒后恢复…");
+    this.log.info("收到 /重启 指令，执行安全重启");
+    try {
+      const entry = path.join(__dirname, "index.js");
+      const child = spawn(process.execPath, [entry], {
+        detached: true,
+        stdio: "ignore",
+        cwd: path.join(__dirname, ".."),
+      });
+      child.unref();
+    } catch (e) {
+      this.log.error("重启拉起失败", { err: e.message });
+      return this.pusher.sendNotification("❌ 重启失败: " + e.message);
+    }
+    // 给新进程 1.5s 拉起时间，然后退出当前进程释放 8787 端口
+    setTimeout(() => process.exit(0), 1500);
   }
 
   /**
