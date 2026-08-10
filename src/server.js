@@ -2,7 +2,10 @@
 // GET  /wecom/callback  回调验证（1秒内返回明文）
 // POST /wecom/callback  消息回调（验签解密后立即回200，异步处理）
 // GET  /healthz         健康检查
+// POST /bridge/send-file  MCP send_file 工具转发：把本地文件推送到微信
 const express = require("express");
+const fs = require("fs");
+const path = require("path");
 const { getSignature, decryptMessage } = require("./wecom/crypto");
 const { extractEncrypt, extractMessage } = require("./wecom/xml");
 
@@ -131,6 +134,27 @@ function buildServer({ cfg, log, registry, runner, api, approver }) {
       ? [...runner.queues.values()].reduce((n, q) => n + q.length, 0)
       : 0;
     res.json({ ok: true, queue: queueN, running: runner.running ? runner.running.size : 0 });
+  });
+
+  // MCP send_file 工具转发：把本地文件推送到微信
+  app.post("/bridge/send-file", async (req, res) => {
+    try {
+      const { file_path: filePath, chatid } = req.body || {};
+      const bot = runner.pusher && runner.pusher.bot;
+      if (!bot || typeof bot.sendFile !== "function") {
+        return res.json({ ok: false, error: "智能机器人通道不可用" });
+      }
+      const target = chatid || bot.lastChatId;
+      if (!target) return res.json({ ok: false, error: "无可用会话（先给机器人发条消息）" });
+      if (!filePath || !fs.existsSync(filePath)) {
+        return res.json({ ok: false, error: "文件不存在: " + (filePath || "") });
+      }
+      const ok = await bot.sendFile(target, filePath);
+      res.json({ ok, path: filePath });
+    } catch (e) {
+      log.error("发送文件端点失败", { err: e.message });
+      res.json({ ok: false, error: e.message });
+    }
   });
 
   return app;

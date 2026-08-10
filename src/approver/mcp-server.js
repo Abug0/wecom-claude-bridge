@@ -56,6 +56,20 @@ async function pollStatus(id) {
   });
 }
 
+/** 请求桥接把本地文件推送到微信 */
+async function sendFileToWecom(filePath, chatid) {
+  return httpRequest(
+    {
+      hostname: BRIDGE_HOST,
+      port: BRIDGE_PORT,
+      path: "/bridge/send-file",
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    },
+    { file_path: filePath, chatid }
+  );
+}
+
 const server = new McpServer({
   name: "wecom-approver",
   version: "0.1.0",
@@ -119,6 +133,32 @@ server.tool(
             text: JSON.stringify({ behavior: "deny", message: "权限确认出错: " + e.message }),
           },
         ],
+      };
+    }
+  }
+);
+
+// send_file 工具：把本地文件推送到微信（用户在对话里要求"发文件/发给我"时调用）
+server.tool(
+  "send_file",
+  "发送文件到微信：当用户要求把某个本地文件发送给他（如「发给我」、「把 xxx 发过来」）时调用。参数为本地文件绝对路径。",
+  {
+    file_path: z.string().describe("本地文件绝对路径，如 D:/path/to/file.txt"),
+  },
+  async ({ file_path }) => {
+    try {
+      const r = await sendFileToWecom(file_path);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({ ok: r.ok, path: r.path || null, error: r.error || null }),
+          },
+        ],
+      };
+    } catch (e) {
+      return {
+        content: [{ type: "text", text: JSON.stringify({ ok: false, error: e.message }) }],
       };
     }
   }
