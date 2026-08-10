@@ -1,7 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-  <rect x="2" y="4" width="20" height="16" rx="3" fill="#4FC3F7"/>
-  <rect x="5" y="9" width="8" height="2" rx="1" fill="#fff"/>
-  <rect x="5" y="13" width="5" height="2" rx="1" fill="#fff"/>
-  <circle cx="17" cy="10" r="2.5" fill="#fff"/>
-  <circle cx="17" cy="15" r="2.5" fill="#fff"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="currentColor">
+  <!-- 聊天气泡（微信远程）-->
+  <path d="M12 3C6.5 3 2 6.9 2 11.7c0 2.8 1.5 5.3 3.8 6.9-.1.9-.4 2.1-1.2 3.2-.2.3 0 .7.4.7 1.8 0 3.4-.8 4.5-1.6.8.2 1.7.3 2.5.3 5.5 0 10-3.9 10-8.7S17.5 3 12 3z"/>
+  <!-- 三个消息点 -->
+  <circle cx="8" cy="11.7" r="1.2"/>
+  <circle cx="12" cy="11.7" r="1.2"/>
+  <circle cx="16" cy="11.7" r="1.2"/>
 </svg>
