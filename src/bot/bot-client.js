@@ -147,13 +147,17 @@ class BotClient {
     }
     const cmd = frame.cmd;
     const body = frame.body || {};
-    const reqId = (frame.headers && frame.headers.req_id) || "";
-
-    // 请求-响应匹配：req_id 在 pendingReplies 里 → resolve 该请求
+    // req_id 可能在 headers，也可能在顶层（不同服务器版本）
+    const reqId = (frame.headers && frame.headers.req_id) || frame.req_id || "";
     if (reqId && this.pendingReplies.has(reqId)) {
       const { resolve } = this.pendingReplies.get(reqId);
       this.pendingReplies.delete(reqId);
       resolve(frame);
+      return;
+    }
+    // 心跳 ack 兼容：cmd 为 pong 或 req_id 以 ping 开头，都视为心跳应答
+    if (cmd === "pong" || reqId.startsWith("ping")) {
+      this.pendingAck = 0;
       return;
     }
 
@@ -208,7 +212,7 @@ class BotClient {
         break;
       }
       default: {
-        this.log.info("收到未知指令", { cmd });
+        this.log.info("收到未知指令", { cmd, reqId });
       }
     }
   }
