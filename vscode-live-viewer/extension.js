@@ -215,11 +215,17 @@ class LiveViewProvider {
       t.liveOffset = size;
       liveItems = this._parseLiveRange(t.livePath, 0, size);
     }
-    // 避免重叠：live 有内容时，jsonl 的最后一条 assistant（当前任务的完整版）
-    // 会被 live 碎片覆盖显示，移除它，用 live 剩余替代。
+    // 避免重叠：live 有内容时，jsonl 的最后一条 user 和 assistant（当前轮的完整版）
+    // 会被 live 碎片覆盖显示，移除它们，用 live 剩余替代。
     if (liveItems.length) {
       for (let i = messages.length - 1; i >= 0; i--) {
         if (messages[i].role === "assistant") {
+          messages.splice(i, 1);
+          break;
+        }
+      }
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role === "user") {
           messages.splice(i, 1);
           break;
         }
@@ -245,11 +251,11 @@ class LiveViewProvider {
         if (size > t.offset) {
           const messages = this._parseRange(t.filePath, t.offset, size);
           t.offset = size;
-          // live 流式已负责 assistant 显示：jsonl 增量里仅保留 user 消息，
-          // assistant 消息仅当 live 从未推送过（liveOffset=0，兜底场景）才发，
-          // 避免同一条回复被 live + jsonl 双渲染导致内容重叠重复。
+          // live 流式已负责本轮 user+assistant 显示（即时通道）：
+          // jsonl 增量里仅当 live 从未推送过（liveOffset=0，兜底场景）才发，
+          // 避免同一条消息被 live + jsonl 双渲染导致重复。
           const filtered = messages.filter((m) => {
-            if (m.role === "assistant") return t.liveOffset === 0;
+            if (m.role === "user" || m.role === "assistant") return t.liveOffset === 0;
             return true;
           });
           if (filtered.length) {
@@ -462,6 +468,14 @@ class LiveViewProvider {
 
   function renderLive(items) {
     for (const it of items) {
+      if (it.kind === 'user') {
+        // 用户消息：独立消息块（live 即时通道，无需等 jsonl）
+        const d = document.createElement('div');
+        d.className = 'msg user';
+        d.innerHTML = '<div class="label">🧑 你</div>' + esc(it.text || '');
+        list.appendChild(d);
+        continue;
+      }
       if (it.kind === 'end') {
         // 任务结束：封当前段落，后续新起
         liveReplyEl = null;

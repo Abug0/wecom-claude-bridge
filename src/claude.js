@@ -865,6 +865,10 @@ class ClaudeRunner {
 
     // 打开 .live 增量文件（VSCode 实时视图用）：任务开始清空
     this._liveOpen(job.sessionId);
+    // 立即写入用户消息（live 即时通道），让扩展立刻显示，无需等 claude 完成落盘 jsonl
+    if (job.prompt) {
+      this._liveAppend(job.sessionId, { kind: "user", text: job.prompt });
+    }
 
     // 开始处理提示：有流式则作为流式首片，否则走自建应用
     const remain = (this.queues.get(job.sessionId) || []).length;
