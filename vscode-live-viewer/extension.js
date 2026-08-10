@@ -383,6 +383,7 @@ class LiveViewProvider {
   const list = document.getElementById('list');
   let current = null;
   let liveItems = [];
+  let knownSessions = new Set();
 
   function esc(s) {
     return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -462,10 +463,18 @@ class LiveViewProvider {
     const msg = ev.data;
     if (msg.type === 'sessions') {
       const cur = sel.value;
+      const ids = msg.sessions.map(s => s.sessionId);
+      // 检测新会话（之前未见过）→ 自动聚焦最新的新会话
+      const newOnes = msg.sessions.filter(s => !knownSessions.has(s.sessionId));
+      knownSessions = new Set(ids);
       sel.innerHTML = msg.sessions.map(s =>
         '<option value="' + s.sessionId + '" title="' + s.project + '">' + esc(s.name || s.sessionId.slice(0, 8)) + '</option>'
       ).join('');
-      if (cur && msg.sessions.some(s => s.sessionId === cur)) {
+      if (newOnes.length && ids.length) {
+        // 自动聚焦最新的新会话（sessions 按 mtime 倒序，第一个最新）
+        sel.value = ids[0];
+        loadSession(ids[0]);
+      } else if (cur && msg.sessions.some(s => s.sessionId === cur)) {
         sel.value = cur;
       } else if (msg.sessions.length) {
         sel.value = msg.sessions[0].sessionId;
