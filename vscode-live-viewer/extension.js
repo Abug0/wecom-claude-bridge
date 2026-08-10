@@ -169,6 +169,11 @@ class LiveViewProvider {
   /** 轮询所有会话：jsonl 增量 + .live 流式增量 */
   _poll() {
     if (!this._view) return;
+    // 定期刷新会话列表（每 20 次轮询 ≈ 10 秒），新会话自动出现在下拉
+    this._pollCount = (this._pollCount || 0) + 1;
+    if (this._pollCount % 20 === 1) {
+      this._sendSessions();
+    }
     for (const [sessionId, t] of trackers) {
       // jsonl 块级增量
       if (fs.existsSync(t.filePath)) {
