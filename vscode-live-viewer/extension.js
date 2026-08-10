@@ -208,11 +208,22 @@ class LiveViewProvider {
       t.offset = size;
       messages = this._parseRange(t.filePath, 0, size);
     }
-    // .live 剩余（未结束的流式内容）
+    // .live 剩余（当前任务的流式内容）
+    let liveItems = [];
     if (fs.existsSync(t.livePath)) {
       const size = fs.statSync(t.livePath).size;
       t.liveOffset = size;
-      const liveItems = this._parseLiveRange(t.livePath, 0, size);
+      liveItems = this._parseLiveRange(t.livePath, 0, size);
+    }
+    // 避免重叠：live 有内容时，jsonl 的最后一条 assistant（当前任务的完整版）
+    // 会被 live 碎片覆盖显示，移除它，用 live 剩余替代。
+    if (liveItems.length) {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role === "assistant") {
+          messages.splice(i, 1);
+          break;
+        }
+      }
       messages = messages.concat(liveItems);
     }
     // 切换会话：全量历史（webview 重建列表）
@@ -234,8 +245,15 @@ class LiveViewProvider {
         if (size > t.offset) {
           const messages = this._parseRange(t.filePath, t.offset, size);
           t.offset = size;
-          if (messages.length) {
-            this._view.webview.postMessage({ type: "messages", sessionId, messages });
+          // live 流式已负责 assistant 显示：jsonl 增量里仅保留 user 消息，
+          // assistant 消息仅当 live 从未推送过（liveOffset=0，兜底场景）才发，
+          // 避免同一条回复被 live + jsonl 双渲染导致内容重叠重复。
+          const filtered = messages.filter((m) => {
+            if (m.role === "assistant") return t.liveOffset === 0;
+            return true;
+          });
+          if (filtered.length) {
+            this._view.webview.postMessage({ type: "messages", sessionId, messages: filtered });
           }
         }
       }
