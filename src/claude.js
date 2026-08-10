@@ -258,7 +258,7 @@ class ClaudeRunner {
    * @param {object} proj
    * @returns {{name, sessionId, cwd}|null}
    */
-  _bindDetected(proj) {
+  _bindDetected(proj, ctx) {
     const detected = detectActiveSession({
       sessionDir: this.cfg.claude.sessionDir,
       cwd: proj.cwd,
@@ -642,7 +642,7 @@ class ClaudeRunner {
     const cur = this._getCur(projKey, ctx);
     if (!cur) {
       // 无当前任务 → 自动识别 VSCode 会话并绑定（relay 标记接力）
-      const bound = this._bindDetected(proj);
+      const bound = this._bindDetected(proj, ctx);
       if (bound) {
         return this.enqueue({
           taskName: bound.name,
@@ -675,7 +675,7 @@ class ClaudeRunner {
     const cur = this._getCur(projKey, ctx);
     if (!cur) {
       // 无当前任务 → 尝试自动识别 VSCode 会话（relay 标记接力）
-      const bound = this._bindDetected(proj);
+      const bound = this._bindDetected(proj, ctx);
       if (bound) {
         const prompt = cmd.prompt || "继续";
         return this.enqueue({
