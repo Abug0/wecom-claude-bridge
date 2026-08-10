@@ -215,7 +215,8 @@ class LiveViewProvider {
       const liveItems = this._parseLiveRange(t.livePath, 0, size);
       messages = messages.concat(liveItems);
     }
-    this._view.webview.postMessage({ type: "messages", sessionId, messages });
+    // 切换会话：全量历史（webview 重建列表）
+    this._view.webview.postMessage({ type: "history", sessionId, messages });
   }
 
   /** 轮询所有会话：jsonl 增量 + .live 流式增量 */
@@ -396,26 +397,36 @@ class LiveViewProvider {
     });
   }
 
+  // 单条消息 → HTML（render 重建与增量追加共用）
+  function msgToHtml(m) {
+    if (m.role === 'user') {
+      return '<div class="msg user"><div class="label">🧑 你</div>' + esc(m.text) + '</div>';
+    }
+    if (m.role === 'assistant') {
+      const parts = (m.parts || []).map(p => {
+        if (p.kind === 'text') return esc(p.text);
+        if (p.kind === 'thinking') return '<div class="thinking">🤔 ' + esc(p.text) + '</div>';
+        if (p.kind === 'tool') return '<div class="tool"><span class="tool-label">🔧 ' + esc(p.name || '工具') + '</span>' + (p.text ? '<pre>' + esc(p.text) + '</pre>' : '') + '</div>';
+        return '';
+      }).join('');
+      return '<div class="msg assistant"><div class="label">🤖 Claude</div>' + parts + '</div>';
+    }
+    return '';
+  }
+
   function render(messages) {
     if (!messages || !messages.length) {
       list.innerHTML = '<div class="empty">暂无消息。在微信里操作 Claude Code 后这里会实时显示。</div>';
       return;
     }
-    list.innerHTML = messages.map(m => {
-      if (m.role === 'user') {
-        return '<div class="msg user"><div class="label">🧑 你</div>' + esc(m.text) + '</div>';
-      }
-      if (m.role === 'assistant') {
-        const parts = (m.parts || []).map(p => {
-          if (p.kind === 'text') return esc(p.text);
-          if (p.kind === 'thinking') return '<div class="thinking">🤔 ' + esc(p.text) + '</div>';
-          if (p.kind === 'tool') return '<div class="tool"><span class="tool-label">🔧 ' + esc(p.name || '工具') + '</span>' + (p.text ? '<pre>' + esc(p.text) + '</pre>' : '') + '</div>';
-          return '';
-        }).join('');
-        return '<div class="msg assistant"><div class="label">🤖 Claude</div>' + parts + '</div>';
-      }
-      return '';
-    }).join('');
+    list.innerHTML = messages.map(msgToHtml).join('');
+    scrollToBottom();
+  }
+
+  // jsonl 增量追加：不清空已有消息，只把新消息附到末尾
+  function appendMessages(messages) {
+    if (!messages || !messages.length) return;
+    list.insertAdjacentHTML('beforeend', messages.map(msgToHtml).join(''));
     scrollToBottom();
   }
 
@@ -499,8 +510,12 @@ class LiveViewProvider {
       } else {
         list.innerHTML = '<div class="empty">暂无会话。用微信操作 Claude Code 后自动出现。</div>';
       }
-    } else if (msg.type === 'messages') {
+    } else if (msg.type === 'history') {
+      // 切换会话：全量重建
       if (current === msg.sessionId) render(msg.messages);
+    } else if (msg.type === 'messages') {
+      // jsonl 增量：追加，不清空已有消息
+      if (current === msg.sessionId) appendMessages(msg.messages);
     } else if (msg.type === 'live') {
       if (current === msg.sessionId) {
         liveItems.push(...msg.items);
