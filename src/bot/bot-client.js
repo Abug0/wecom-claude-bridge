@@ -322,6 +322,7 @@ class BotClient {
     // 单聊 from 是对象 {userid}，群聊有 chatid；主动推送用 chatid（单聊=userid）
     const fromUserId = (body.from && body.from.userid) || "";
     this.lastChatId = body.chatid || fromUserId || "";
+    this.lastChatType = chattype; // 记录聊天类型（approver 判断群聊提示用）
     // 多用户：记录该用户的对话目标，并标记为当前操作用户
     if (fromUserId) {
       this.userChats.set(fromUserId, this.lastChatId);

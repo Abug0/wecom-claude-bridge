@@ -35,6 +35,7 @@ class Approver {
     } catch {
       inputDesc = String(input);
     }
+    const isGroup = !!(this.pusher && this.pusher.bot && this.pusher.bot.lastChatType === "group");
     const lines = [
       "⚠️ **需要你的授权确认**",
       `工具: ${tool_name}`,
@@ -47,8 +48,9 @@ class Approver {
       "",
       "回复：**允许** 或 **拒绝**",
       "或 **总是允许 <工具>**（如「总是允许 Bash」）免后续确认",
+      isGroup ? "（群聊请 @ 我 再回复，否则收不到）" : null,
       "(5分钟内有效，超时自动拒绝)",
-    ];
+    ].filter(Boolean);
 
     try {
       // 先结束当前流式回复（授权前已输出的部分定型），授权完成后新起一条流
