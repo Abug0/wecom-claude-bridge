@@ -1139,6 +1139,11 @@ class ClaudeRunner {
       return [...base, "--session-id", job.sessionId, "--name", job.taskName, job.prompt];
     }
     const args = [...base, "--resume", job.sessionId];
+    // 通用能力提示：告知 claude 可通过 send_file 工具把本地文件发到用户微信
+    args.push(
+      "--append-system-prompt",
+      "你可以通过 mcp__wecom_approver__send_file 工具把本地文件发送到用户的微信。当用户要求「发文件」、「把 xx 发给我」、「发给我」、「把文件发过来」时，调用该工具（参数 file_path 填本地文件绝对路径）发送对应文件。"
+    );
     // 接力：微信第一次接手 VSCode 会话时注入"继续而非重来"的语义引导
     if (job.relay) {
       const relayHint =
