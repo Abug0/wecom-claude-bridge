@@ -95,12 +95,17 @@ class BotClient {
       const handleError = (err) => {
         this.log.error("WebSocket 错误", { err: err.message || String(err) });
       };
+      // 协议层 pong：服务器可能对心跳回 WS 控制帧 pong（非 JSON），收到即视为心跳应答
+      const handlePong = () => {
+        this.pendingAck = 0;
+      };
 
       if (isWsLib) {
         ws.on("open", handleOpen);
         ws.on("message", (data) => handleMessage(data));
         ws.on("close", handleClose);
         ws.on("error", handleError);
+        ws.on("pong", handlePong); // ws 库支持
       } else {
         ws.onopen = handleOpen;
         ws.onmessage = (ev) => handleMessage(ev.data);
