@@ -1,8 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="currentColor">
-  <!-- 聊天气泡（微信远程）-->
-  <path d="M12 3C6.5 3 2 6.9 2 11.7c0 2.8 1.5 5.3 3.8 6.9-.1.9-.4 2.1-1.2 3.2-.2.3 0 .7.4.7 1.8 0 3.4-.8 4.5-1.6.8.2 1.7.3 2.5.3 5.5 0 10-3.9 10-8.7S17.5 3 12 3z"/>
-  <!-- 三个消息点 -->
-  <circle cx="8" cy="11.7" r="1.2"/>
-  <circle cx="12" cy="11.7" r="1.2"/>
-  <circle cx="16" cy="11.7" r="1.2"/>
+  <!-- 天线 -->
+  <rect x="11" y="1.5" width="2" height="3" rx="0.8"/>
+  <circle cx="12" cy="1" r="1.4"/>
+  <!-- 机器人头 -->
+  <rect x="3.5" y="5" width="17" height="13" rx="3"/>
+  <!-- 眼睛 -->
+  <rect x="7.5" y="9" width="3.2" height="3.2" rx="1"/>
+  <rect x="13.3" y="9" width="3.2" height="3.2" rx="1"/>
+  <!-- 嘴巴 -->
+  <rect x="9" y="14" width="6" height="1.6" rx="0.8"/>
+  <!-- 耳朵 -->
+  <rect x="1" y="9" width="2.5" height="5" rx="1"/>
+  <rect x="20.5" y="9" width="2.5" height="5" rx="1"/>
 </svg>
