@@ -217,7 +217,7 @@ class BotClient {
         break;
       }
       default: {
-        this.log.info("收到未知指令", { cmd, reqId });
+        this.log.info("收到未知指令", { cmd, reqId, raw: JSON.stringify(frame).slice(0, 200) });
       }
     }
   }
@@ -231,18 +231,15 @@ class BotClient {
     clearInterval(this.heartbeat);
     this.heartbeat = setInterval(() => {
       if (!this.available) return;
-      this.pendingAck++;
       // 心跳帧需带 req_id（格式 ping_<ts>_<rand>），服务器按 req_id 前缀回 ack
       this._send({ cmd: "ping", headers: { req_id: this._genReqId("ping") } });
-      if (this.pendingAck >= 2) {
-        this.log.warn("心跳连续 2 次无 ack，判定连接异常");
-        if (this.ws) {
-          try {
-            this.ws.close();
-          } catch {
-            /* 忽略 */
-          }
-        }
+      // 服务器不一定回 ack（连接实际存活）。不因"无 ack"主动断开——
+      // 连接死亡由 ws 的 close/error 事件或发送失败检测，避免误断开导致频繁重连丢消息。
+      // 仅记录异常，供诊断。
+      this.pendingAck++;
+      if (this.pendingAck >= 6) {
+        this.log.warn("心跳长时间无 ack（连接可能已死，等待 ws 事件处理）");
+        this.pendingAck = 0;
       }
     }, 30000);
   }
