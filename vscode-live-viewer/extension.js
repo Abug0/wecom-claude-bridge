@@ -422,32 +422,49 @@ class LiveViewProvider {
   function loadSession(sessionId) {
     current = sessionId;
     liveItems = [];
+    liveReplyEl = null;
+    liveThinkingEl = null;
     vscode.postMessage({ type: 'selectSession', sessionId });
   }
+
+  // 流式累积容器：reply/thinking 增量持续追加到同一元素（打字机），不逐块换行
+  let liveReplyEl = null;
+  let liveThinkingEl = null;
 
   function renderLive(items) {
     for (const it of items) {
       if (it.kind === 'end') {
+        // 任务结束：封当前段落，后续新起
+        liveReplyEl = null;
+        liveThinkingEl = null;
         const d = document.createElement('div');
         d.className = 'end-line';
         d.textContent = '── 本轮结束 ──';
         list.appendChild(d);
         continue;
       }
-      const el = document.createElement('div');
       if (it.kind === 'reply') {
-        el.className = 'live reply';
-        el.textContent = it.text;
+        if (!liveReplyEl) {
+          liveReplyEl = document.createElement('div');
+          liveReplyEl.className = 'live reply';
+          list.appendChild(liveReplyEl);
+        }
+        liveReplyEl.textContent += it.text; // 增量追加，不换行
       } else if (it.kind === 'thinking') {
-        el.className = 'live thinking';
-        el.textContent = '🤔 ' + it.text;
+        if (!liveThinkingEl) {
+          liveThinkingEl = document.createElement('div');
+          liveThinkingEl.className = 'live thinking';
+          liveThinkingEl.textContent = '🤔 ';
+          list.appendChild(liveThinkingEl);
+        }
+        liveThinkingEl.textContent += it.text;
       } else if (it.kind === 'tool') {
+        // 工具调用独立成块
+        const el = document.createElement('div');
         el.className = 'live tool';
         el.textContent = '🔧 ' + it.text;
-      } else {
-        continue;
+        list.appendChild(el);
       }
-      list.appendChild(el);
     }
     scrollToBottom();
   }
