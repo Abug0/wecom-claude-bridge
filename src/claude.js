@@ -1018,8 +1018,8 @@ class ClaudeRunner {
   }
 
   /**
-   * 回复去重兜底：检测文本中"相邻重复的段"（模型/上下文偶发把内容复述多次），保留一份。
-   * 先做整段相邻去重，再兜底末尾小段重复。
+   * 回复去重兜底：检测文本中"相邻重复的段"（流式增量+整段消息重复累积、模型复述等），保留一份。
+   * 块长下限 10 字符（覆盖短句重复，如"你好！…😄"），过短（<10）可能误伤正常文本。
    */
   _dedupTail(text) {
     if (!text || text.length < 20) return text;
@@ -1032,7 +1032,7 @@ class ClaudeRunner {
       changed = false;
       // 块长从大到小，优先去重长段（避免小窗口切坏内容）
       const maxLen = Math.min(Math.floor(out.length / 2), 1500);
-      for (let len = maxLen; len >= 30; len--) {
+      for (let len = maxLen; len >= 10; len--) {
         let i = 0;
         while (i + 2 * len <= out.length) {
           const block = out.slice(i, i + len);
@@ -1050,7 +1050,7 @@ class ClaudeRunner {
 
     // 2) 末尾小段重复兜底（原有逻辑）
     const maxLen2 = Math.floor(text.length / 2);
-    for (let len = Math.min(maxLen2, 200); len >= 20; len--) {
+    for (let len = Math.min(maxLen2, 200); len >= 10; len--) {
       const tail = text.slice(text.length - len);
       const pos = text.indexOf(tail);
       if (pos !== -1 && pos < text.length - len) {
@@ -1184,12 +1184,14 @@ class ClaudeRunner {
       // 逐行解析 NDJSON 流（stream-json）
       // tool_use 的 input 通过 input_json_delta 流式累积，start 时为空
       let curTool = null; // { name, buf }
+      let sawStreamEvent = false; // 是否收到过流式事件（增量已覆盖内容，assistant 整段跳过）
       const processLine = (line) => {
         const l = line.trim();
         if (!l) return;
         try {
           const r = JSON.parse(l);
           if (r.type === "stream_event") {
+            sawStreamEvent = true;
             const ev = r.event || {};
             if (ev.type === "content_block_delta" && ev.delta) {
               // 文本增量（最终回复）
@@ -1221,7 +1223,10 @@ class ClaudeRunner {
               curTool = null;
             }
           } else if (r.type === "assistant") {
-            // 兼容：整段 assistant 消息（非流式场景）
+            // 流式模式下：增量（text_delta/thinking_delta/content_block）已完整覆盖内容，
+            // assistant 整段消息是冗余的——跳过，避免 reply/thinking 双累积导致重复。
+            if (sawStreamEvent) return;
+            // 非流式兜底：整段 assistant 消息
             const content = r.message && r.message.content;
             if (Array.isArray(content)) {
               for (const c of content) {
