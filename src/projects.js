@@ -32,7 +32,7 @@ class ProjectRegistry {
         } catch {}
       }
     }
-    return { projects: {} };
+    return { projects: {}, chatCurrent: {} };
   }
 
   _save() {
@@ -202,8 +202,43 @@ class ProjectRegistry {
     if (!p || !p.tasks[taskName]) return false;
     delete p.tasks[taskName];
     if (p.currentTask === taskName) p.currentTask = null;
+    // 清理引用该任务的聊天映射
+    if (this.data.chatCurrent) {
+      for (const [k, v] of Object.entries(this.data.chatCurrent)) {
+        if (v === taskName && k.startsWith(projectKey + "::")) {
+          delete this.data.chatCurrent[k];
+        }
+      }
+    }
     this._save();
     return true;
+  }
+
+  /**
+   * 按聊天域取当前任务名（企业微信不同会话独立，持久化）
+   * @param {string} projectKey
+   * @param {string} chatDomain 群聊=chatid，单聊=userid
+   * @returns {string|null}
+   */
+  getChatTask(projectKey, chatDomain) {
+    const m = this.data.chatCurrent || {};
+    return m[projectKey + "::" + chatDomain] || null;
+  }
+
+  /** 按聊天域设置当前任务名（持久化） */
+  setChatTask(projectKey, chatDomain, taskName) {
+    if (!this.data.chatCurrent) this.data.chatCurrent = {};
+    this.data.chatCurrent[projectKey + "::" + chatDomain] = taskName;
+    this._save();
+    return true;
+  }
+
+  /** 删除某聊天的任务映射（该聊天无任务时） */
+  clearChatTask(projectKey, chatDomain) {
+    if (this.data.chatCurrent) {
+      delete this.data.chatCurrent[projectKey + "::" + chatDomain];
+      this._save();
+    }
   }
 
   removeProject(projectKey) {

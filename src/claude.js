@@ -28,7 +28,6 @@ class ClaudeRunner {
     this.thinkingEnabled = false; // /thinking 思考内容展示开关（默认只显示"思考中…"）
     this.pendingConfirm = null; // 自然语言命令待确认 { cmd, content }
     this.cronJobs = []; // 定时任务（持久化到 cron.json）
-    this.chatCurrent = new Map(); // "projKey::chatDomain" -> taskName（按聊天隔离当前任务）
   }
 
   /**
@@ -39,21 +38,21 @@ class ClaudeRunner {
     return "default";
   }
 
-  /** 按聊天取当前任务：该聊天设置过用它的；未设置则回退共享当前任务 */
+  /** 按聊天取当前任务（持久化到注册表：不同企微会话独立，重启不丢） */
   _getCur(projKey, ctx) {
-    const k = projKey + "::" + this._chatDomain(ctx);
-    if (this.chatCurrent.has(k)) {
-      const name = this.chatCurrent.get(k);
-      // 该聊天明确设置过 → 取它自己的（任务不存在则 null，不串到共享）
-      return this.registry.getTask(projKey, name) || null;
+    const domain = this._chatDomain(ctx);
+    const name = this.registry.getChatTask(projKey, domain);
+    if (name) {
+      const t = this.registry.getTask(projKey, name);
+      return t ? { name, ...t } : null;
     }
-    // 未设置过 → 回退共享当前任务（保持原有连贯行为）
-    return this.registry.getCurrentTask(projKey);
+    // 该聊天从未设置 → null，由调用方为它新建独立会话
+    return null;
   }
 
-  /** 按聊天设置当前任务（同时更新共享池，保证 /会话列表 一致） */
+  /** 按聊天设置当前任务（持久化 + 更新共享池，保证 /会话列表 一致） */
   _setCur(projKey, ctx, taskName) {
-    this.chatCurrent.set(projKey + "::" + this._chatDomain(ctx), taskName);
+    this.registry.setChatTask(projKey, this._chatDomain(ctx), taskName);
     this.registry.setCurrentTask(projKey, taskName);
   }
 
@@ -641,18 +640,8 @@ class ClaudeRunner {
     const projKey = encodeCwd(proj.cwd);
     const cur = this._getCur(projKey, ctx);
     if (!cur) {
-      // 无当前任务 → 自动识别 VSCode 会话并绑定（relay 标记接力）
-      const bound = this._bindDetected(proj, ctx);
-      if (bound) {
-        return this.enqueue({
-          taskName: bound.name,
-          sessionId: bound.sessionId,
-          cwd: bound.cwd,
-          prompt: cmd.prompt,
-          relay: true,
-        });
-      }
-      // 无可用会话 → 开新会话（用第一句 prompt 自动命名，避免"微信-xxx"无意义名）
+      // 该企微会话无独立任务 → 新建独立会话（各企微会话彻底隔离，不共享 jsonl；
+      // 要接管 VSCode 会话请用 /接管 <编号>）
       const sessionId = crypto.randomUUID();
       const autoName = cmd.prompt.replace(/\s+/g, " ").trim().slice(0, 20);
       const taskName = autoName || "微信-" + sessionId.slice(0, 8);
@@ -674,21 +663,10 @@ class ClaudeRunner {
     const projKey = encodeCwd(proj.cwd);
     const cur = this._getCur(projKey, ctx);
     if (!cur) {
-      // 无当前任务 → 尝试自动识别 VSCode 会话（relay 标记接力）
-      const bound = this._bindDetected(proj, ctx);
-      if (bound) {
-        const prompt = cmd.prompt || "继续";
-        return this.enqueue({
-          taskName: bound.name,
-          sessionId: bound.sessionId,
-          cwd: bound.cwd,
-          prompt,
-          relay: true,
-        });
-      }
+      // 该企微会话无独立任务 → 提示用 /接管 或 /新开（不自动绑定，保持隔离）
       return this.pusher.pushSectioned(
         "继续",
-        "当前无任务。用 /新开 <任务名> 开新会话，或用 /切换 <任务名>。"
+        "当前无任务。用 /新开 <任务名> 开新会话，或用 /接管 <编号> 接管 VSCode 会话。"
       );
     }
     const prompt = cmd.prompt || "继续";
