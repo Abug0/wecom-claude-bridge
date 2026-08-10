@@ -31,6 +31,8 @@ function activate(context) {
 class LiveViewProvider {
   resolveWebviewView(webviewView) {
     this._view = webviewView;
+    this._watchers = []; // fs.watch 句柄
+    this._refreshTimer = null; // 防抖定时器
     webviewView.webview.options = { enableScripts: true };
     webviewView.webview.html = this._html();
 
@@ -44,12 +46,18 @@ class LiveViewProvider {
       }
     });
 
-    // 启动轮询
+    // 启动轮询（流式增量）+ 文件监听（事件驱动刷新会话列表）
     this._timer = setInterval(() => this._poll(), POLL_MS);
-    // 视图关闭时清理定时器
+    this._updateWatchers();
+    // 兜底：30 秒定期刷新（fs.watch 可能漏事件）
+    this._fallbackTimer = setInterval(() => this._sendSessions(), 30000);
+    // 视图关闭时清理
     webviewView.onDidDispose(() => {
       if (this._timer) clearInterval(this._timer);
       this._timer = null;
+      if (this._fallbackTimer) clearInterval(this._fallbackTimer);
+      this._fallbackTimer = null;
+      this._cleanupWatchers();
     });
 
     // 初始推送会话列表
@@ -92,6 +100,50 @@ class LiveViewProvider {
     }
     out.sort((a, b) => b.mtimeMs - a.mtimeMs);
     return out.slice(0, 50);
+  }
+
+  /**
+   * 事件驱动：fs.watch 监听 SESSION_ROOT 和每个项目目录，
+   * 新会话/新消息出现时即时刷新会话列表（防抖 200ms）
+   */
+  _updateWatchers() {
+    this._cleanupWatchers();
+    if (!fs.existsSync(SESSION_ROOT)) return;
+    // 监听 SESSION_ROOT（新项目目录出现）
+    try {
+      const w = fs.watch(SESSION_ROOT, () => this._scheduleRefresh());
+      w.on("error", () => {});
+      this._watchers.push(w);
+    } catch {}
+    // 监听每个项目目录（新 jsonl 出现）
+    for (const proj of fs.readdirSync(SESSION_ROOT)) {
+      const dir = path.join(SESSION_ROOT, proj);
+      try {
+        if (!fs.statSync(dir).isDirectory()) continue;
+        const w = fs.watch(dir, () => this._scheduleRefresh());
+        w.on("error", () => {});
+        this._watchers.push(w);
+      } catch {}
+    }
+  }
+
+  _cleanupWatchers() {
+    for (const w of this._watchers || []) {
+      try {
+        w.close();
+      } catch {}
+    }
+    this._watchers = [];
+  }
+
+  /** 防抖刷新会话列表（200ms 内多次事件合并为一次） */
+  _scheduleRefresh() {
+    if (this._refreshTimer) clearTimeout(this._refreshTimer);
+    this._refreshTimer = setTimeout(() => {
+      this._refreshTimer = null;
+      this._updateWatchers(); // 项目目录可能变化，重建 watcher
+      this._sendSessions();
+    }, 200);
   }
 
   /** 从 jsonl 尾部提取会话显示名（lastPrompt > slug > sessionId 前8位） */
@@ -169,11 +221,6 @@ class LiveViewProvider {
   /** 轮询所有会话：jsonl 增量 + .live 流式增量 */
   _poll() {
     if (!this._view) return;
-    // 定期刷新会话列表（每 20 次轮询 ≈ 10 秒），新会话自动出现在下拉
-    this._pollCount = (this._pollCount || 0) + 1;
-    if (this._pollCount % 20 === 1) {
-      this._sendSessions();
-    }
     for (const [sessionId, t] of trackers) {
       // jsonl 块级增量
       if (fs.existsSync(t.filePath)) {
