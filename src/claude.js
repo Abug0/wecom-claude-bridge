@@ -39,16 +39,16 @@ class ClaudeRunner {
     return "default";
   }
 
-  /** 按聊天取当前任务（每个企微会话独立，绝不回退共享，避免不同会话串到同一 claude 会话） */
+  /** 按聊天取当前任务：该聊天设置过用它的；未设置则回退共享当前任务 */
   _getCur(projKey, ctx) {
     const k = projKey + "::" + this._chatDomain(ctx);
     if (this.chatCurrent.has(k)) {
       const name = this.chatCurrent.get(k);
-      // 该聊天明确设置过 → 取它自己的（任务不存在则 null）
+      // 该聊天明确设置过 → 取它自己的（任务不存在则 null，不串到共享）
       return this.registry.getTask(projKey, name) || null;
     }
-    // 该聊天从未设置 → 返回 null，由调用方为它新建/绑定独立任务
-    return null;
+    // 未设置过 → 回退共享当前任务（保持原有连贯行为）
+    return this.registry.getCurrentTask(projKey);
   }
 
   /** 按聊天设置当前任务（同时更新共享池，保证 /会话列表 一致） */
